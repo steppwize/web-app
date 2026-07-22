@@ -171,10 +171,18 @@ function AccountRow({
         {formatCurrency(account.value)}
       </span>
       <div className="flex items-center gap-1">
-        <button onClick={onEdit} className="w-8 h-8 flex items-center justify-center rounded-lg text-muted bg-surface">
+        <button
+          onClick={onEdit}
+          aria-label={`Editar ${account.name}`}
+          className="w-8 h-8 flex items-center justify-center rounded-lg text-muted bg-surface"
+        >
           <Pencil size={14} />
         </button>
-        <button onClick={onDelete} className="w-8 h-8 flex items-center justify-center rounded-lg text-negative bg-surface">
+        <button
+          onClick={onDelete}
+          aria-label={`Remover ${account.name}`}
+          className="w-8 h-8 flex items-center justify-center rounded-lg text-negative bg-surface"
+        >
           <Trash2 size={14} />
         </button>
       </div>
