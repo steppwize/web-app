@@ -25,7 +25,12 @@ export function BackupPage() {
   function handleFileSelected(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]
     e.target.value = ''
-    if (file) setPendingFile(file)
+    if (!file) return
+    if (!/\.(tar\.gz|tgz)$/i.test(file.name)) {
+      useToastStore.getState().show('Selecione um arquivo .tar.gz ou .tgz.')
+      return
+    }
+    setPendingFile(file)
   }
 
   async function handleConfirmRestore() {
@@ -75,7 +80,7 @@ export function BackupPage() {
         <input
           ref={fileInputRef}
           type="file"
-          accept=".tar.gz,.tgz"
+          accept=".tar.gz,.tgz,.gz,application/gzip,application/x-gzip"
           className="hidden"
           onChange={handleFileSelected}
         />
