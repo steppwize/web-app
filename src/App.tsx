@@ -1,13 +1,14 @@
 import { BrowserRouter, Routes, Route } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { Landmark, LayoutGrid, Tag } from 'lucide-react'
 import { AppShell } from './components/layout/AppShell'
 import { ToastHost } from './components/ui/ToastHost'
 import { HomePage } from './pages/HomePage'
 import { TransactionsPage } from './pages/TransactionsPage'
+import { AccountsPage } from './pages/AccountsPage'
 import { CardsPage } from './pages/CardsPage'
 import { CardInvoicePage } from './pages/CardInvoicePage'
-import { PlaceholderPage } from './pages/PlaceholderPage'
+import { CategoriesPage } from './pages/CategoriesPage'
+import { TagsPage } from './pages/TagsPage'
 import { BackupPage } from './pages/BackupPage'
 import { NotFoundPage } from './pages/NotFoundPage'
 
@@ -42,7 +43,7 @@ function App() {
             path="/contas"
             element={
               <ShellRoute>
-                <PlaceholderPage title="Contas" icon={Landmark} />
+                <AccountsPage />
               </ShellRoute>
             }
           />
@@ -66,7 +67,7 @@ function App() {
             path="/categorias"
             element={
               <ShellRoute>
-                <PlaceholderPage title="Categorias" icon={LayoutGrid} />
+                <CategoriesPage />
               </ShellRoute>
             }
           />
@@ -74,7 +75,7 @@ function App() {
             path="/tags"
             element={
               <ShellRoute>
-                <PlaceholderPage title="Tags" icon={Tag} />
+                <TagsPage />
               </ShellRoute>
             }
           />

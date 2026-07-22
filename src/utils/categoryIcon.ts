@@ -46,3 +46,6 @@ export function resolveCategoryIcon(icon: string | null | undefined): LucideIcon
   if (!icon) return Tag
   return ICON_MAP[icon.toLowerCase()] ?? Tag
 }
+
+// Curated subset offered by the category icon picker — every key here has a mapped lucide icon.
+export const CATEGORY_ICON_OPTIONS = Object.keys(ICON_MAP)

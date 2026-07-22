@@ -54,6 +54,111 @@ export async function getHomeCashFlow(): Promise<CashFlowContract> {
   }
 }
 
+export async function getAccounts(): Promise<AccountResponse[]> {
+  const accountRows = await db
+    .select()
+    .from(accounts)
+    .where(and(eq(accounts.deleted, false), eq(accounts.typeAccount, TypeAccount.Account)))
+
+  const accountIds = accountRows.map((a) => a.id)
+  const sums =
+    accountIds.length > 0
+      ? await db
+          .select({ accountId: transactions.accountId, total: sql<number>`coalesce(sum(${transactions.value}), 0)` })
+          .from(transactions)
+          .where(and(inArray(transactions.accountId, accountIds), eq(transactions.paidOut, true)))
+          .groupBy(transactions.accountId)
+      : []
+  const sumByAccount = new Map(sums.map((s) => [s.accountId, Number(s.total)]))
+
+  return accountRows.map((a) => ({
+    ...emptyAccountResponse(),
+    id: a.id,
+    name: a.name ?? '',
+    description: a.description ?? '',
+    initialValue: a.initialValue,
+    value: a.initialValue + (sumByAccount.get(a.id) ?? 0),
+    isDefault: a.isDefault,
+  }))
+}
+
+export interface AccountInput {
+  name: string
+  description: string
+  initialValue: number
+  isDefault: boolean
+}
+
+export async function createAccount(input: AccountInput): Promise<AccountResponse> {
+  if (input.isDefault) {
+    await db.update(accounts).set({ isDefault: false }).where(eq(accounts.typeAccount, TypeAccount.Account))
+  }
+
+  const [row] = await db
+    .insert(accounts)
+    .values({
+      id: crypto.randomUUID(),
+      name: input.name,
+      description: input.description,
+      typeAccount: TypeAccount.Account,
+      initialValue: input.initialValue,
+      isDefault: input.isDefault,
+    })
+    .returning()
+
+  return {
+    ...emptyAccountResponse(),
+    id: row.id,
+    name: row.name ?? '',
+    description: row.description ?? '',
+    initialValue: row.initialValue,
+    value: row.initialValue,
+    isDefault: row.isDefault,
+  }
+}
+
+export async function updateAccount(id: string, input: AccountInput): Promise<AccountResponse> {
+  if (input.isDefault) {
+    await db.update(accounts).set({ isDefault: false }).where(eq(accounts.typeAccount, TypeAccount.Account))
+  }
+
+  const [row] = await db
+    .update(accounts)
+    .set({
+      name: input.name,
+      description: input.description,
+      initialValue: input.initialValue,
+      isDefault: input.isDefault,
+      updatedAt: toNaiveTimestamp(new Date()),
+    })
+    .where(eq(accounts.id, id))
+    .returning()
+  if (!row) throw new Error('Conta não encontrada.')
+
+  const [sum] = await db
+    .select({ total: sql<number>`coalesce(sum(${transactions.value}), 0)` })
+    .from(transactions)
+    .where(and(eq(transactions.accountId, id), eq(transactions.paidOut, true)))
+
+  return {
+    ...emptyAccountResponse(),
+    id: row.id,
+    name: row.name ?? '',
+    description: row.description ?? '',
+    initialValue: row.initialValue,
+    value: row.initialValue + Number(sum?.total ?? 0),
+    isDefault: row.isDefault,
+  }
+}
+
+export async function deleteAccount(id: string): Promise<{ message: string }> {
+  await db
+    .update(accounts)
+    .set({ deleted: true, updatedAt: toNaiveTimestamp(new Date()) })
+    .where(eq(accounts.id, id))
+  return { message: 'Conta removida.' }
+}
+
 export async function getCards(): Promise<AccountResponse[]> {
   const cardRows = await db
     .select()
