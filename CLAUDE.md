@@ -78,11 +78,31 @@ the DB directly) → `db/` (drizzle schema + PGlite client).
 ### Backup / restore
 
 Export ([src/backup/export.ts](src/backup/export.ts)) dumps the whole PGlite data directory as a
-gzipped tarball via `pg.dumpDataDir`. Restore can't apply in place — the live `PGliteWorker` holds a
-lock on the IndexedDB store — so [src/backup/restore.ts](src/backup/restore.ts) stages the uploaded
-file in a separate plain IndexedDB store ([src/db/restoreStaging.ts](src/db/restoreStaging.ts)), closes
-the PGlite connection, and reloads the page; `main.tsx` picks up the staged file on the next boot before
-any PGlite connection exists.
+gzipped tarball via `pg.dumpDataDir` (`createBackupBlob` returns the blob + filename; `exportBackup`
+triggers the browser download). Restore can't apply in place — the live `PGliteWorker` holds a lock on
+the IndexedDB store — so [src/backup/restore.ts](src/backup/restore.ts) stages the uploaded file in a
+separate plain IndexedDB store ([src/db/restoreStaging.ts](src/db/restoreStaging.ts)), closes the PGlite
+connection, and reloads the page; `main.tsx` picks up the staged file on the next boot before any PGlite
+connection exists. `restoreBackup` takes a plain `File` regardless of where it came from (local picker or
+a Google Drive download), so [src/pages/BackupPage.tsx](src/pages/BackupPage.tsx) funnels both sources
+through one confirm modal.
+
+Google Drive is an optional second destination for the same tarball, added without a backend:
+- [src/backup/googleAuth.ts](src/backup/googleAuth.ts) wraps Google Identity Services' *token model*
+  (`google.accounts.oauth2.initTokenClient`, loaded at runtime from `accounts.google.com/gsi/client` —
+  not an npm dep). This flow has **no refresh token**; the access token lives in memory for the tab only
+  and is re-requested via a user-gesture popup once it's near expiry. `isDriveConfigured` gates the
+  feature on `VITE_GOOGLE_CLIENT_ID` being set at build time — a public client ID, not a secret; there is
+  no client secret anywhere in this flow, don't add one.
+- [src/backup/googleDrive.ts](src/backup/googleDrive.ts) talks to the Drive v3 REST API directly over
+  `fetch` (no `googleapis` dep). It requests only the `drive.file` scope (non-sensitive — the app can
+  only see files/folders it created itself), keeps backups in a `Steppwize Backups` folder in the user's
+  My Drive, uploads via the resumable protocol (PGlite dumps can exceed the multipart 5 MB cap), and
+  prunes to the 10 most recent backups after each upload.
+- Local dev needs `VITE_GOOGLE_CLIENT_ID` in `.env.local` (see `.env.example`); CI injects it from the
+  `VITE_GOOGLE_CLIENT_ID` GitHub secret in [.github/workflows/deploy.yml](.github/workflows/deploy.yml).
+  Setup (OAuth client, Drive API enablement, consent screen scope) is one-time and manual in Google Cloud
+  Console — there's no code path that does it.
 
 ### Dates
 

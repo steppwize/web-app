@@ -1,13 +1,20 @@
 import { pg } from '../db/client'
 
-export async function exportBackup(): Promise<void> {
-  const dump = await pg.dumpDataDir('gzip')
-
-  const now = new Date()
+function backupFilename(now: Date): string {
   const pad = (n: number) => String(n).padStart(2, '0')
-  const filename = `steppwize-backup-${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}.tar.gz`
+  // Minute granularity: unlike the local download, Drive can hold many same-day backups.
+  return `steppwize-backup-${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}.tar.gz`
+}
 
-  const url = URL.createObjectURL(dump)
+export async function createBackupBlob(): Promise<{ blob: Blob; filename: string }> {
+  const blob = await pg.dumpDataDir('gzip')
+  return { blob, filename: backupFilename(new Date()) }
+}
+
+export async function exportBackup(): Promise<void> {
+  const { blob, filename } = await createBackupBlob()
+
+  const url = URL.createObjectURL(blob)
   const link = document.createElement('a')
   link.href = url
   link.download = filename
