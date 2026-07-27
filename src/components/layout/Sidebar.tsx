@@ -26,12 +26,12 @@ export function Sidebar() {
           </NavLink>
         ))}
       </nav>
-      <NavLink
-        to="/backup"
-        className="flex items-center gap-2.5 h-[72px] px-5 border-t border-border text-xs text-muted hover:text-white"
-      >
-        Dados salvos neste dispositivo
-      </NavLink>
+      <div className="border-t border-border px-5 py-3.5 flex flex-col gap-1">
+        <NavLink to="/backup" className="text-xs text-muted hover:text-white">
+          Dados salvos neste dispositivo
+        </NavLink>
+        <span className="text-[10px] text-muted/60">v{__COMMIT_SHA__}</span>
+      </div>
     </aside>
   )
 }
