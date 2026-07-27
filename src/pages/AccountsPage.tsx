@@ -1,5 +1,6 @@
-import { useState } from 'react'
-import { Landmark, Pencil, Plus, Trash2 } from 'lucide-react'
+import { useRef, useState } from 'react'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { Landmark, Pencil, Plus, Trash2, Upload } from 'lucide-react'
 import { useAccounts, useCreateAccount, useDeleteAccount, useUpdateAccount } from '../hooks/useAccounts'
 import { useToastStore } from '../store/toastStore'
 import { Card } from '../components/ui/Card'
@@ -7,8 +8,9 @@ import { IconCircle } from '../components/ui/IconCircle'
 import { Toggle } from '../components/ui/Toggle'
 import { colorFromString } from '../utils/colorFromString'
 import { formatCurrency } from '../utils/currency'
-import type { AccountInput } from '../api/accounts'
-import type { AccountResponse } from '../api/types'
+import { readFileAsDataUrl } from '../utils/file'
+import { importOfxStatement, type AccountInput } from '../api/accounts'
+import type { AccountResponse, ImportOfxResponse } from '../api/types'
 
 const EMPTY_FORM: AccountInput = { name: '', description: '', initialValue: 0, isDefault: false }
 
@@ -17,10 +19,50 @@ export function AccountsPage() {
   const createAccount = useCreateAccount()
   const updateAccount = useUpdateAccount()
   const deleteAccount = useDeleteAccount()
+  const queryClient = useQueryClient()
 
   const [editing, setEditing] = useState<AccountResponse | null>(null)
   const [formOpen, setFormOpen] = useState(false)
   const [pendingDelete, setPendingDelete] = useState<AccountResponse | null>(null)
+
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  const [pendingImportAccount, setPendingImportAccount] = useState<{ id: string; name: string } | null>(null)
+  const [confirmImport, setConfirmImport] = useState<{ id: string; name: string; file: File } | null>(null)
+
+  const importMutation = useMutation({
+    mutationFn: async ({ accountId, file }: { accountId: string; file: File }) => {
+      const dataUrl = await readFileAsDataUrl(file)
+      return importOfxStatement(accountId, dataUrl)
+    },
+    onSuccess: (response: ImportOfxResponse) => {
+      queryClient.invalidateQueries({ queryKey: ['accounts'] })
+      queryClient.invalidateQueries({ queryKey: ['home-cash-flow'] })
+      useToastStore
+        .getState()
+        .show(
+          `Extrato importado: ${response.transactionsImported} lançamentos (${response.transactionsSkipped} já existentes)`,
+        )
+      setConfirmImport(null)
+    },
+    onError: (error: unknown) => {
+      useToastStore.getState().show(error instanceof Error ? error.message : 'Falha ao importar o extrato.')
+      setConfirmImport(null)
+    },
+  })
+
+  function openImportPicker(accountId: string, accountName: string) {
+    setPendingImportAccount({ id: accountId, name: accountName })
+    fileInputRef.current?.click()
+  }
+
+  function handleFileSelected(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0]
+    e.target.value = ''
+    if (file && pendingImportAccount) {
+      setConfirmImport({ id: pendingImportAccount.id, name: pendingImportAccount.name, file })
+    }
+    setPendingImportAccount(null)
+  }
 
   function openCreate() {
     setEditing(null)
@@ -73,6 +115,8 @@ export function AccountsPage() {
 
   return (
     <div>
+      <input ref={fileInputRef} type="file" accept=".ofx" className="hidden" onChange={handleFileSelected} />
+
       {formOpen && (
         <AccountFormModal
           initial={editing ? { name: editing.name, description: editing.description, initialValue: editing.initialValue, isDefault: editing.isDefault } : EMPTY_FORM}
@@ -92,6 +136,15 @@ export function AccountsPage() {
         />
       )}
 
+      {confirmImport && (
+        <ImportOfxModal
+          accountName={confirmImport.name}
+          pending={importMutation.isPending}
+          onCancel={() => setConfirmImport(null)}
+          onConfirm={() => importMutation.mutate({ accountId: confirmImport.id, file: confirmImport.file })}
+        />
+      )}
+
       {/* Mobile */}
       <div className="lg:hidden flex flex-col h-screen">
         <div className="flex items-center justify-between px-4 h-14">
@@ -104,7 +157,13 @@ export function AccountsPage() {
         <div className="flex-1 overflow-y-auto px-4 flex flex-col gap-3 pb-6">
           {accounts.length === 0 && <EmptyState />}
           {accounts.map((account) => (
-            <AccountRow key={account.id} account={account} onEdit={() => openEdit(account)} onDelete={() => setPendingDelete(account)} />
+            <AccountRow
+              key={account.id}
+              account={account}
+              onEdit={() => openEdit(account)}
+              onDelete={() => setPendingDelete(account)}
+              onImport={() => openImportPicker(account.id, account.name)}
+            />
           ))}
         </div>
       </div>
@@ -125,7 +184,13 @@ export function AccountsPage() {
 
         <div className="flex flex-col gap-3">
           {accounts.map((account) => (
-            <AccountRow key={account.id} account={account} onEdit={() => openEdit(account)} onDelete={() => setPendingDelete(account)} />
+            <AccountRow
+              key={account.id}
+              account={account}
+              onEdit={() => openEdit(account)}
+              onDelete={() => setPendingDelete(account)}
+              onImport={() => openImportPicker(account.id, account.name)}
+            />
           ))}
         </div>
       </div>
@@ -145,10 +210,12 @@ function AccountRow({
   account,
   onEdit,
   onDelete,
+  onImport,
 }: {
   account: AccountResponse
   onEdit: () => void
   onDelete: () => void
+  onImport: () => void
 }) {
   const accent = colorFromString(account.id)
   return (
@@ -171,6 +238,14 @@ function AccountRow({
         {formatCurrency(account.value)}
       </span>
       <div className="flex items-center gap-1">
+        <button
+          onClick={onImport}
+          aria-label={`Importar extrato OFX para ${account.name}`}
+          title="Importar extrato (OFX)"
+          className="w-8 h-8 flex items-center justify-center rounded-lg text-muted bg-surface"
+        >
+          <Upload size={14} />
+        </button>
         <button
           onClick={onEdit}
           aria-label={`Editar ${account.name}`}
@@ -316,6 +391,48 @@ function ConfirmDeleteModal({
             className="h-9 px-4 rounded-lg text-sm font-semibold bg-negative disabled:opacity-60"
           >
             {pending ? 'Removendo...' : 'Remover'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function ImportOfxModal({
+  accountName,
+  pending,
+  onCancel,
+  onConfirm,
+}: {
+  accountName: string
+  pending: boolean
+  onCancel: () => void
+  onConfirm: () => void
+}) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+      <div className="w-full max-w-sm rounded-2xl bg-card p-5 flex flex-col gap-4">
+        <div className="flex flex-col gap-1.5">
+          <h2 className="text-base font-bold">Importar extrato (OFX)</h2>
+          <p className="text-sm text-muted">
+            Isso vai importar os lançamentos do arquivo para <span className="font-semibold text-white">{accountName}</span>.
+            Lançamentos já importados anteriormente serão ignorados automaticamente.
+          </p>
+        </div>
+        <div className="flex items-center justify-end gap-2.5">
+          <button
+            onClick={onCancel}
+            disabled={pending}
+            className="h-9 px-4 rounded-lg text-sm font-semibold text-muted disabled:opacity-60"
+          >
+            Cancelar
+          </button>
+          <button
+            onClick={onConfirm}
+            disabled={pending}
+            className="h-9 px-4 rounded-lg text-sm font-semibold bg-brand disabled:opacity-60"
+          >
+            {pending ? 'Importando...' : 'Importar'}
           </button>
         </div>
       </div>

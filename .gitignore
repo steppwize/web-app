@@ -30,3 +30,4 @@ dist-ssr
 
 # Ad-hoc local debug scripts, not part of the app
 scripts/
+*.ofx

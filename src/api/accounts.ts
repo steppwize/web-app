@@ -6,6 +6,7 @@ import {
   deleteAccount as deleteAccountService,
   type AccountInput,
 } from '../services/accountService'
+import { importOfxStatement as importOfxStatementService } from '../services/importOfx'
 
 export function getHomeCashFlow() {
   return getHomeCashFlowService()
@@ -25,6 +26,10 @@ export function updateAccount(id: string, input: AccountInput) {
 
 export function deleteAccount(id: string) {
   return deleteAccountService(id)
+}
+
+export function importOfxStatement(accountId: string, file: string) {
+  return importOfxStatementService(accountId, file)
 }
 
 export type { AccountInput }

@@ -146,6 +146,12 @@ export interface ImportItauFaturaResponse {
   skippedPreviousPaymentDate: string | null
 }
 
+export interface ImportOfxResponse {
+  transactionsImported: number
+  transactionsSkipped: number
+  totalValue: number
+}
+
 export interface TagResponse {
   id: string
   title: string

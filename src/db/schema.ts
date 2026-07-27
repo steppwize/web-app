@@ -77,6 +77,9 @@ export const transactions = pgTable('transactions', {
   categoryId: text('category_id').references(() => categories.id),
   invoiceId: text('invoice_id').references(() => invoices.id),
   subCardId: text('sub_card_id').references(() => subCards.id),
+  // Bank statement (OFX) FITID, used to dedupe transactions on re-import. Null for transactions
+  // created any other way (manual entry, Itaú fatura import).
+  externalId: text('external_id'),
   ...audit,
 })
 

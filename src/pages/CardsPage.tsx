@@ -9,16 +9,8 @@ import { comingSoon, useToastStore } from '../store/toastStore'
 import { colorFromString } from '../utils/colorFromString'
 import { gradientFromString } from '../utils/cardGradient'
 import { formatCurrency } from '../utils/currency'
+import { readFileAsDataUrl } from '../utils/file'
 import type { AccountResponse, ImportItauFaturaResponse, TransactionInvoiceResponse } from '../api/types'
-
-function readFileAsDataUrl(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onload = () => resolve(reader.result as string)
-    reader.onerror = () => reject(reader.error)
-    reader.readAsDataURL(file)
-  })
-}
 
 export function CardsPage() {
   const navigate = useNavigate()

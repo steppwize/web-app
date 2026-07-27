@@ -73,6 +73,7 @@ create table if not exists transactions (
   category_id text references categories(id),
   invoice_id text references invoices(id),
   sub_card_id text references sub_cards(id),
+  external_id text,
   created_at timestamp not null default now(),
   updated_at timestamp not null default now(),
   deleted boolean not null default false
@@ -80,6 +81,7 @@ create table if not exists transactions (
 create index if not exists idx_transactions_due_date on transactions(due_date);
 create index if not exists idx_transactions_account_id on transactions(account_id);
 create index if not exists idx_transactions_invoice_id on transactions(invoice_id);
+alter table transactions add column if not exists external_id text;
 
 create table if not exists fixed_transactions (
   id text primary key,
