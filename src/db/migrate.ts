@@ -96,6 +96,8 @@ create table if not exists fixed_transactions (
   deleted boolean not null default false
 );
 
+alter table fixed_transactions add column if not exists end_date timestamp;
+
 create table if not exists rules (
   id text primary key,
   name text,

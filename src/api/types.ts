@@ -113,6 +113,9 @@ export interface TransactionContract {
   frequencyType: FrequencyType
   // Only populated by GetInvoicePreview — null for every real transaction.
   previewSource: 'Fixed' | 'Installment' | 'CategoryAverage' | null
+  // Only populated for bank-account 'Fixed' preview rows backed by a fixed_transactions row
+  // with an end date (installments, single-month one-offs) — shown as a discreet hint in the UI.
+  previewEndDate?: string | null
 }
 
 export interface TransactionTotalByAccount {
@@ -134,6 +137,27 @@ export interface TransactionInvoiceResponse {
   payment: boolean
   valuePayment: number
   transactions: TransactionContract[]
+}
+
+// Analogous to TransactionInvoiceResponse but for bank accounts, which have no invoice/statement
+// concept — used by getAccountPreview to estimate an empty month from fixed transactions + category averages.
+export interface AccountPreviewResponse {
+  value: number
+  transactions: TransactionContract[]
+}
+
+export interface FixedTransactionResponse {
+  id: string
+  description: string
+  value: number
+  accountId: string
+  accountName: string
+  categoryId: string | null
+  categoryName: string
+  categoryColor: string
+  categoryIcon: string
+  startDate: string
+  endDate: string | null
 }
 
 export interface ImportItauFaturaResponse {

@@ -19,6 +19,10 @@ export function makeDate(year: number, month: number, day: number): Date {
   return new Date(year, month - 1, day)
 }
 
+export function daysInMonth(year: number, month: number): number {
+  return new Date(year, month, 0).getDate()
+}
+
 export function addMonths(d: Date, months: number): Date {
   const result = new Date(d)
   result.setMonth(result.getMonth() + months)

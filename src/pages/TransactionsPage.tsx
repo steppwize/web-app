@@ -1,16 +1,49 @@
 import { useMemo, useState } from 'react'
-import { ChevronLeft, ChevronRight, Search, SlidersHorizontal, Plus } from 'lucide-react'
+import {
+  ChevronLeft,
+  ChevronRight,
+  Search,
+  SlidersHorizontal,
+  Plus,
+  Repeat,
+  Pencil,
+  Trash2,
+  CreditCard,
+} from 'lucide-react'
 import { useTransactions } from '../hooks/useTransactions'
 import { useHomeCashFlow } from '../hooks/useHomeCashFlow'
-import { comingSoon } from '../store/toastStore'
+import { useAccountPreview } from '../hooks/useAccountPreview'
+import { useCardsPreview } from '../hooks/useCardsPreview'
+import {
+  useFixedTransactions,
+  useCreateFixedTransaction,
+  useUpdateFixedTransaction,
+  useDeleteFixedTransaction,
+} from '../hooks/useFixedTransactions'
+import { useAccounts } from '../hooks/useAccounts'
+import { useCategories } from '../hooks/useCategories'
+import { comingSoon, useToastStore } from '../store/toastStore'
 import { Card } from '../components/ui/Card'
 import { IconCircle } from '../components/ui/IconCircle'
 import { Toggle } from '../components/ui/Toggle'
 import { formatCurrency, formatSignedCurrency } from '../utils/currency'
-import { formatDayHeader, formatMonthYear } from '../utils/date'
-import { computeMonthSummary, type DayGroup } from '../utils/monthSummary'
+import { formatDayHeader, formatFullDate, formatMonthYear } from '../utils/date'
+import { computeMonthSummary, computeDayGroups, type DayGroup } from '../utils/monthSummary'
 import { resolveCategoryIcon } from '../utils/categoryIcon'
-import type { TransactionContract } from '../api/types'
+import { groupPreviewTransactions, previewSourceLabel } from '../utils/previewGroups'
+import type { FixedTransactionInput } from '../api/fixedTransactions'
+import type { CategoryResponse, FixedTransactionResponse, TransactionContract } from '../api/types'
+import type { CardPreviewGroup } from '../services/accountService'
+
+// One merged day in the account's day-by-day preview: real DayGroup transactions plus any card
+// whose invoice due date (see getCardsPreview) falls on this day, collapsed to a single row —
+// its per-category breakdown lives behind the row's click-through modal instead of the day list.
+interface PreviewDayGroup {
+  dateKey: string
+  transactions: TransactionContract[]
+  cards: CardPreviewGroup[]
+  endOfDayBalance: number
+}
 
 export function TransactionsPage() {
   const now = new Date()
@@ -18,11 +51,56 @@ export function TransactionsPage() {
   const [year, setYear] = useState(now.getFullYear())
   const [query, setQuery] = useState('')
   const [showEodBalance, setShowEodBalance] = useState(true)
+  const [fixedModalOpen, setFixedModalOpen] = useState(false)
+  const [selectedCardPreview, setSelectedCardPreview] = useState<CardPreviewGroup | null>(null)
 
   const { data: txData, isLoading, isError } = useTransactions(month, year)
   const { data: cashFlow } = useHomeCashFlow()
 
   const monthSummary = useMemo(() => (txData ? computeMonthSummary(txData) : null), [txData])
+  const isEmptyMonth = !!txData && txData.transactions.length === 0
+
+  const { data: preview, isLoading: isPreviewLoading } = useAccountPreview(year, month, { enabled: isEmptyMonth })
+  // Preview items get spread across plausible days of the target month (see accountService.ts),
+  // so the account preview renders as a day-by-day forecast (`reverse: false`: day 1 first, since
+  // this looks forward, not back).
+  const accountPreviewDayGroups = useMemo(
+    () => computeDayGroups(preview?.transactions ?? [], monthSummary?.startingBalance ?? 0, { reverse: false }),
+    [preview, monthSummary],
+  )
+
+  // Independent of the account preview above: each card decides on its own (server-side) whether
+  // it has real invoice data for this month, regardless of whether the bank account does.
+  const { data: cardsPreview } = useCardsPreview(year, month)
+  const hasAnyPreviewData = (preview?.transactions.length ?? 0) > 0 || (cardsPreview?.length ?? 0) > 0
+
+  // Merges each card into the single day matching its own invoice due date (accounts.dueDate),
+  // as one collapsed row rather than its full category breakdown — that breakdown is only shown
+  // in the click-through modal (CardPreviewModal) so the day list doesn't get crowded with it.
+  const previewDayGroups = useMemo<PreviewDayGroup[]>(() => {
+    const accountByDate = new Map(accountPreviewDayGroups.map((g) => [g.dateKey, g]))
+    const cardsByDate = new Map<string, CardPreviewGroup[]>()
+    for (const card of cardsPreview ?? []) {
+      const key = card.dueDate.slice(0, 10)
+      const list = cardsByDate.get(key) ?? []
+      list.push(card)
+      cardsByDate.set(key, list)
+    }
+
+    const sortedKeys = [...new Set([...accountByDate.keys(), ...cardsByDate.keys()])].sort()
+
+    let runningBalance = monthSummary?.startingBalance ?? 0
+    return sortedKeys.map((dateKey) => {
+      const accountGroup = accountByDate.get(dateKey)
+      if (accountGroup) runningBalance = accountGroup.endOfDayBalance
+      return {
+        dateKey,
+        transactions: accountGroup?.transactions ?? [],
+        cards: cardsByDate.get(dateKey) ?? [],
+        endOfDayBalance: runningBalance,
+      }
+    })
+  }, [accountPreviewDayGroups, cardsPreview, monthSummary])
 
   const filteredGroups = useMemo(() => {
     if (!monthSummary) return []
@@ -35,6 +113,21 @@ export function TransactionsPage() {
       }))
       .filter((group) => group.transactions.length > 0)
   }, [monthSummary, query])
+
+  const filteredPreviewDayGroups = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    if (!q) return previewDayGroups
+    return previewDayGroups
+      .map((group) => ({
+        ...group,
+        transactions: group.transactions.filter((tx) => tx.description.toLowerCase().includes(q)),
+        cards: group.cards.filter((c) => c.cardName.toLowerCase().includes(q)),
+      }))
+      .filter((group) => group.transactions.length > 0 || group.cards.length > 0)
+  }, [previewDayGroups, query])
+
+  const displayedProjectedBalance =
+    (monthSummary?.projectedEndBalance ?? 0) + (isEmptyMonth ? (preview?.value ?? 0) : 0)
 
   function goToPreviousMonth() {
     if (month === 1) {
@@ -59,6 +152,11 @@ export function TransactionsPage() {
 
   return (
     <div>
+      {fixedModalOpen && <FixedTransactionsModal onClose={() => setFixedModalOpen(false)} />}
+      {selectedCardPreview && (
+        <CardPreviewModal card={selectedCardPreview} onClose={() => setSelectedCardPreview(null)} />
+      )}
+
       {/* Mobile */}
       <div className="lg:hidden flex flex-col h-screen">
         <div className="flex flex-col gap-3 px-4 pt-4">
@@ -83,6 +181,14 @@ export function TransactionsPage() {
               />
             </div>
             <button
+              onClick={() => setFixedModalOpen(true)}
+              aria-label="Gerenciar fixos"
+              title="Gerenciar fixos"
+              className="w-11 h-11 shrink-0 flex items-center justify-center rounded-xl bg-card"
+            >
+              <Repeat size={18} />
+            </button>
+            <button
               onClick={comingSoon}
               className="w-11 h-11 shrink-0 flex items-center justify-center rounded-xl bg-card"
             >
@@ -97,7 +203,19 @@ export function TransactionsPage() {
         </div>
 
         <div className="flex-1 overflow-y-auto px-4 pb-32">
-          <TransactionGroups groups={filteredGroups} showEodBalance={showEodBalance} />
+          {isEmptyMonth ? (
+            <AccountPreviewSection
+              dayGroups={filteredPreviewDayGroups}
+              value={preview?.value}
+              loading={isPreviewLoading}
+              hasAnyPreviewData={hasAnyPreviewData}
+              showEodBalance={showEodBalance}
+              variant="list"
+              onSelectCard={setSelectedCardPreview}
+            />
+          ) : (
+            <TransactionGroups groups={filteredGroups} showEodBalance={showEodBalance} />
+          )}
         </div>
 
         <div className="fixed bottom-24 left-0 right-0 flex items-center justify-between px-5 h-[72px] bg-surface border-t border-border">
@@ -107,9 +225,7 @@ export function TransactionsPage() {
           </div>
           <div className="flex flex-col items-end">
             <span className="text-xs text-muted">Previsto fim do mês</span>
-            <span className="text-base font-bold text-positive">
-              {formatCurrency(monthSummary.projectedEndBalance)}
-            </span>
+            <span className="text-base font-bold text-positive">{formatCurrency(displayedProjectedBalance)}</span>
           </div>
         </div>
 
@@ -153,6 +269,12 @@ export function TransactionsPage() {
             >
               <SlidersHorizontal size={16} />
             </button>
+            <button
+              onClick={() => setFixedModalOpen(true)}
+              className="flex items-center gap-2 h-10 px-4 rounded-[10px] bg-card border border-border text-sm font-semibold"
+            >
+              <Repeat size={16} /> Fixos
+            </button>
             <div className="flex items-center gap-2 text-sm text-muted">
               <span>Saldo fim do dia</span>
               <Toggle checked={showEodBalance} onChange={setShowEodBalance} />
@@ -168,7 +290,21 @@ export function TransactionsPage() {
 
         <div className="flex-1 flex gap-5 min-h-0">
           <Card className="flex-1 overflow-y-auto">
-            <TransactionTable groups={filteredGroups} showEodBalance={showEodBalance} />
+            {isEmptyMonth ? (
+              <div className="flex flex-col gap-2 px-4 py-3">
+                <AccountPreviewSection
+                  dayGroups={filteredPreviewDayGroups}
+                  value={preview?.value}
+                  loading={isPreviewLoading}
+                  hasAnyPreviewData={hasAnyPreviewData}
+                  showEodBalance={showEodBalance}
+                  variant="table"
+                  onSelectCard={setSelectedCardPreview}
+                />
+              </div>
+            ) : (
+              <TransactionTable groups={filteredGroups} showEodBalance={showEodBalance} />
+            )}
           </Card>
 
           <div className="w-[280px] shrink-0 flex flex-col gap-3">
@@ -186,7 +322,7 @@ export function TransactionsPage() {
               <SummaryRow label="Saldo atual" display={formatCurrency(cashFlow?.total ?? 0)} tone="positive" />
               <SummaryRow
                 label="Previsto fim do mês"
-                display={formatCurrency(monthSummary.projectedEndBalance)}
+                display={formatCurrency(displayedProjectedBalance)}
                 tone="positive"
               />
             </Card>
@@ -244,18 +380,23 @@ function TransactionRow({ transaction }: { transaction: TransactionContract }) {
         <Icon size={18} style={{ color }} />
       </IconCircle>
       <div className="flex-1 min-w-0 flex flex-col gap-0.5">
-        <span className="text-sm font-semibold truncate">{transaction.description}</span>
+        <span className="flex items-center gap-1.5 min-w-0">
+          <span className="text-sm font-semibold truncate">{transaction.description}</span>
+          <PreviewBadge source={transaction.previewSource} />
+        </span>
         <span className="text-xs text-muted truncate">{transaction.categoryName}</span>
       </div>
       <div className="flex flex-col items-end gap-1.5">
         <span className={`text-sm font-semibold ${value >= 0 ? 'text-positive' : 'text-negative'}`}>
           {formatSignedCurrency(value)}
         </span>
-        <span
-          className={`w-[9px] h-[9px] rounded-full ${
-            transaction.paidOut ? 'bg-positive' : 'border border-muted'
-          }`}
-        />
+        {!transaction.previewSource && (
+          <span
+            className={`w-[9px] h-[9px] rounded-full ${
+              transaction.paidOut ? 'bg-positive' : 'border border-muted'
+            }`}
+          />
+        )}
       </div>
     </div>
   )
@@ -311,8 +452,14 @@ function TransactionTableRow({ transaction }: { transaction: TransactionContract
           <Icon size={15} style={{ color }} />
         </IconCircle>
         <div className="flex flex-col min-w-0">
-          <span className="text-sm font-semibold truncate">{transaction.description}</span>
-          <span className="text-xs text-muted truncate">{transaction.account}</span>
+          <span className="flex items-center gap-1.5 min-w-0">
+            <span className="text-sm font-semibold truncate">{transaction.description}</span>
+            <PreviewBadge source={transaction.previewSource} />
+          </span>
+          <span className="text-xs text-muted truncate">
+            {transaction.account}
+            {transaction.previewEndDate ? ` · até ${formatFullDate(transaction.previewEndDate)}` : ''}
+          </span>
         </div>
       </div>
       <span className="w-32 text-sm text-muted truncate">{transaction.categoryName}</span>
@@ -320,11 +467,13 @@ function TransactionTableRow({ transaction }: { transaction: TransactionContract
         {formatSignedCurrency(value)}
       </span>
       <span className="w-16 flex items-center justify-center">
-        <span
-          className={`w-[9px] h-[9px] rounded-full ${
-            transaction.paidOut ? 'bg-positive' : 'border border-muted'
-          }`}
-        />
+        {!transaction.previewSource && (
+          <span
+            className={`w-[9px] h-[9px] rounded-full ${
+              transaction.paidOut ? 'bg-positive' : 'border border-muted'
+            }`}
+          />
+        )}
       </span>
     </div>
   )
@@ -347,4 +496,590 @@ function SummaryRow({
       </span>
     </div>
   )
+}
+
+function PreviewBadge({ source }: { source: TransactionContract['previewSource'] }) {
+  const label = previewSourceLabel(source)
+  if (!label) return null
+  return (
+    <span className="shrink-0 h-[18px] flex items-center px-1.5 rounded text-[10px] font-semibold bg-muted/20 text-muted">
+      {label}
+    </span>
+  )
+}
+
+function PreviewBanner({ value, loading }: { value: number | undefined; loading: boolean }) {
+  return (
+    <div className="flex items-center justify-between px-3 py-2.5 rounded-xl bg-card border border-dashed border-border text-xs">
+      <span className="text-muted">Estimativa — mês ainda sem transações</span>
+      {!loading && value !== undefined && (
+        <span className="font-semibold">{formatSignedCurrency(value)}</span>
+      )}
+    </div>
+  )
+}
+
+function PreviewGroupHeader({ label, subtotal }: { label: string; subtotal: number }) {
+  return (
+    <div className="flex items-center justify-between px-1 pt-2 pb-1">
+      <span className="text-[11px] font-semibold text-muted uppercase tracking-wide">{label}</span>
+      <span className={`text-xs font-semibold ${subtotal >= 0 ? 'text-positive' : 'text-negative'}`}>
+        {formatSignedCurrency(subtotal)}
+      </span>
+    </div>
+  )
+}
+
+// Renders the account preview as a day-by-day forecast — one row per estimated transaction plus
+// one collapsed row per card due that day (see CardAggregateRow) — so an estimated month reads
+// like any other, including the "Saldo fim do dia" running balance. Each transaction row still
+// carries its own PreviewBadge (Fixo/Média) since day-grouping drops the old source-grouped headers.
+function AccountPreviewSection({
+  dayGroups,
+  value,
+  loading,
+  hasAnyPreviewData,
+  showEodBalance,
+  variant,
+  onSelectCard,
+}: {
+  dayGroups: PreviewDayGroup[]
+  value: number | undefined
+  loading: boolean
+  hasAnyPreviewData: boolean
+  showEodBalance: boolean
+  variant: 'list' | 'table'
+  onSelectCard: (card: CardPreviewGroup) => void
+}) {
+  return (
+    <div className="flex flex-col gap-2">
+      <PreviewBanner value={value} loading={loading} />
+      {!loading && !hasAnyPreviewData && (
+        <p className="text-sm text-muted text-center pt-8">Sem histórico suficiente para estimar este mês.</p>
+      )}
+      {hasAnyPreviewData &&
+        (variant === 'list' ? (
+          <PreviewDayList groups={dayGroups} showEodBalance={showEodBalance} onSelectCard={onSelectCard} />
+        ) : (
+          <PreviewDayTable groups={dayGroups} showEodBalance={showEodBalance} onSelectCard={onSelectCard} />
+        ))}
+    </div>
+  )
+}
+
+function PreviewDayList({
+  groups,
+  showEodBalance,
+  onSelectCard,
+}: {
+  groups: PreviewDayGroup[]
+  showEodBalance: boolean
+  onSelectCard: (card: CardPreviewGroup) => void
+}) {
+  if (groups.length === 0) {
+    return <p className="text-sm text-muted text-center pt-8">Nenhuma transação encontrada.</p>
+  }
+  return (
+    <div className="flex flex-col gap-4">
+      {groups.map((group) => (
+        <div key={group.dateKey} className="flex flex-col gap-2">
+          <span className="text-[11px] font-semibold tracking-wide text-muted">
+            {formatDayHeader(group.dateKey)}
+          </span>
+          {group.transactions.map((tx) => (
+            <TransactionRow key={tx.id} transaction={tx} />
+          ))}
+          {group.cards.map((card) => (
+            <CardAggregateRow key={card.cardId} card={card} onClick={() => onSelectCard(card)} />
+          ))}
+          {showEodBalance && (
+            <div className="flex items-center justify-between px-3 py-2 rounded-lg bg-brand/5 border border-brand/25">
+              <span className="text-xs text-brand-light">Saldo fim do dia</span>
+              <span
+                className={`text-xs font-semibold ${
+                  group.endOfDayBalance >= 0 ? 'text-positive' : 'text-negative'
+                }`}
+              >
+                {formatSignedCurrency(group.endOfDayBalance)}
+              </span>
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function PreviewDayTable({
+  groups,
+  showEodBalance,
+  onSelectCard,
+}: {
+  groups: PreviewDayGroup[]
+  showEodBalance: boolean
+  onSelectCard: (card: CardPreviewGroup) => void
+}) {
+  if (groups.length === 0) {
+    return <p className="text-sm text-muted text-center py-8">Nenhuma transação encontrada.</p>
+  }
+  return (
+    <div className="flex flex-col">
+      <div className="flex items-center h-11 px-4 bg-surface text-xs font-semibold text-muted">
+        <span className="flex-1">Transação</span>
+        <span className="w-32">Categoria</span>
+        <span className="w-32 text-right">Valor</span>
+        <span className="w-16 text-center">Status</span>
+      </div>
+      {groups.map((group) => (
+        <div key={group.dateKey}>
+          <div className="flex items-center h-9 px-4 bg-bg text-[11px] font-semibold text-muted tracking-wide">
+            {formatDayHeader(group.dateKey)}
+          </div>
+          {group.transactions.map((tx) => (
+            <TransactionTableRow key={tx.id} transaction={tx} />
+          ))}
+          {group.cards.map((card) => (
+            <CardAggregateTableRow key={card.cardId} card={card} onClick={() => onSelectCard(card)} />
+          ))}
+          {showEodBalance && (
+            <div className="flex items-center justify-between h-9 px-4 bg-brand/5 border-y border-brand/25">
+              <span className="text-xs text-brand-light">Saldo fim do dia</span>
+              <span
+                className={`text-xs font-semibold ${
+                  group.endOfDayBalance >= 0 ? 'text-positive' : 'text-negative'
+                }`}
+              >
+                {formatSignedCurrency(group.endOfDayBalance)}
+              </span>
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
+  )
+}
+
+// One collapsed row per card due that day — its full per-category breakdown (installments, fixed
+// charges, category averages) opens in CardPreviewModal instead of being spelled out inline, so a
+// month with several cards doesn't drown the account's own day-by-day forecast.
+function CardAggregateRow({ card, onClick }: { card: CardPreviewGroup; onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      className="w-full flex items-center gap-3 h-[68px] px-3 rounded-xl bg-card border border-dashed border-border text-left"
+    >
+      <IconCircle background="#8B8FA820" size={40}>
+        <CreditCard size={18} className="text-muted" />
+      </IconCircle>
+      <div className="flex-1 min-w-0 flex flex-col gap-0.5">
+        <span className="text-sm font-semibold truncate">Cartão · {card.cardName}</span>
+        <span className="text-xs text-muted truncate">Toque para ver por categoria</span>
+      </div>
+      <span className={`text-sm font-semibold ${card.value >= 0 ? 'text-positive' : 'text-negative'}`}>
+        {formatSignedCurrency(card.value)}
+      </span>
+      <ChevronRight size={16} className="text-muted shrink-0" />
+    </button>
+  )
+}
+
+function CardAggregateTableRow({ card, onClick }: { card: CardPreviewGroup; onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      className="w-full flex items-center h-14 px-4 border-b border-dashed border-border text-left"
+    >
+      <div className="flex-1 flex items-center gap-3 min-w-0">
+        <IconCircle background="#8B8FA820" size={32}>
+          <CreditCard size={15} className="text-muted" />
+        </IconCircle>
+        <div className="flex flex-col min-w-0">
+          <span className="text-sm font-semibold truncate">Cartão · {card.cardName}</span>
+          <span className="text-xs text-muted truncate">Ver por categoria</span>
+        </div>
+      </div>
+      <span className="w-32 text-sm text-muted truncate">—</span>
+      <span
+        className={`w-32 text-right text-sm font-semibold ${card.value >= 0 ? 'text-positive' : 'text-negative'}`}
+      >
+        {formatSignedCurrency(card.value)}
+      </span>
+      <span className="w-16 flex items-center justify-center">
+        <ChevronRight size={14} className="text-muted" />
+      </span>
+    </button>
+  )
+}
+
+// The card's own preview grouped by source (Parcelas/Fixos/Média) — what CardPreviewSection used
+// to render inline before it got collapsed into CardAggregateRow — now shown on demand instead of
+// always taking up space in the account's day-by-day list.
+function CardPreviewModal({ card, onClose }: { card: CardPreviewGroup; onClose: () => void }) {
+  const groups = useMemo(() => groupPreviewTransactions(card.transactions), [card.transactions])
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+      <div className="w-full max-w-md max-h-[85vh] rounded-2xl bg-card p-5 flex flex-col gap-4">
+        <div className="flex items-center justify-between">
+          <h2 className="text-base font-bold">Cartão · {card.cardName}</h2>
+          <button onClick={onClose} className="text-sm text-muted">
+            Fechar
+          </button>
+        </div>
+        <div className="flex items-center justify-between px-1 -mt-2">
+          <span className="text-xs text-muted">Estimativa da fatura</span>
+          <span className={`text-sm font-semibold ${card.value >= 0 ? 'text-positive' : 'text-negative'}`}>
+            {formatSignedCurrency(card.value)}
+          </span>
+        </div>
+
+        <div className="flex-1 overflow-y-auto flex flex-col gap-2">
+          {groups.map((group) => (
+            <div key={group.source} className="flex flex-col gap-2">
+              <PreviewGroupHeader label={group.label} subtotal={group.subtotal} />
+              {group.items.map((tx) => (
+                <TransactionRow key={tx.id} transaction={tx} />
+              ))}
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+const EMPTY_FIXED_FORM: FixedTransactionInput = {
+  description: '',
+  value: 0,
+  accountId: '',
+  categoryId: null,
+  startDate: '',
+  endDate: null,
+}
+
+function todayDateInputValue(): string {
+  const d = new Date()
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+function FixedTransactionsModal({ onClose }: { onClose: () => void }) {
+  const { data: fixedTransactions, isLoading } = useFixedTransactions()
+  const { data: accounts } = useAccounts()
+  const { data: categories } = useCategories()
+  const createFixed = useCreateFixedTransaction()
+  const updateFixed = useUpdateFixedTransaction()
+  const deleteFixed = useDeleteFixedTransaction()
+
+  const [editing, setEditing] = useState<FixedTransactionResponse | null>(null)
+  const [formOpen, setFormOpen] = useState(false)
+  const [pendingDelete, setPendingDelete] = useState<FixedTransactionResponse | null>(null)
+
+  const flatCategories = categories ? flattenCategories(categories) : []
+
+  function openCreate() {
+    setEditing(null)
+    setFormOpen(true)
+  }
+
+  function openEdit(item: FixedTransactionResponse) {
+    setEditing(item)
+    setFormOpen(true)
+  }
+
+  function handleSubmit(input: FixedTransactionInput) {
+    if (editing) {
+      updateFixed.mutate(
+        { id: editing.id, input },
+        {
+          onSuccess: () => {
+            useToastStore.getState().show('Fixo atualizado.')
+            setFormOpen(false)
+          },
+          onError: (error) => useToastStore.getState().show(error instanceof Error ? error.message : 'Falha ao salvar fixo.'),
+        },
+      )
+    } else {
+      createFixed.mutate(input, {
+        onSuccess: () => {
+          useToastStore.getState().show('Fixo criado.')
+          setFormOpen(false)
+        },
+        onError: (error) => useToastStore.getState().show(error instanceof Error ? error.message : 'Falha ao salvar fixo.'),
+      })
+    }
+  }
+
+  function handleDelete() {
+    if (!pendingDelete) return
+    deleteFixed.mutate(pendingDelete.id, {
+      onSuccess: () => {
+        useToastStore.getState().show('Fixo removido.')
+        setPendingDelete(null)
+      },
+      onError: (error) => useToastStore.getState().show(error instanceof Error ? error.message : 'Falha ao remover fixo.'),
+    })
+  }
+
+  const pending = createFixed.isPending || updateFixed.isPending
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+      <div className="w-full max-w-md max-h-[85vh] rounded-2xl bg-card p-5 flex flex-col gap-4">
+        <div className="flex items-center justify-between">
+          <h2 className="text-base font-bold">Transações fixas</h2>
+          <button onClick={onClose} className="text-sm text-muted">
+            Fechar
+          </button>
+        </div>
+        <p className="text-xs text-muted -mt-2">
+          Lançamentos recorrentes (salário, aluguel, assinaturas) usados para estimar meses futuros sem
+          transações.
+        </p>
+
+        <button
+          onClick={openCreate}
+          className="flex items-center justify-center gap-2 h-10 rounded-[10px] bg-brand text-sm font-semibold"
+        >
+          <Plus size={16} /> Novo fixo
+        </button>
+
+        <div className="flex-1 overflow-y-auto flex flex-col gap-2">
+          {isLoading && <p className="text-sm text-muted text-center pt-4">Carregando...</p>}
+          {!isLoading && fixedTransactions?.length === 0 && (
+            <p className="text-sm text-muted text-center pt-4">Nenhum fixo cadastrado.</p>
+          )}
+          {fixedTransactions?.map((item) => (
+            <div key={item.id} className="flex items-center gap-3 p-3 rounded-xl bg-surface">
+              <div className="flex-1 min-w-0 flex flex-col gap-0.5">
+                <span className="text-sm font-semibold truncate">{item.description}</span>
+                <span className="text-xs text-muted truncate">
+                  {item.accountName}
+                  {item.categoryName ? ` · ${item.categoryName}` : ''}
+                  {item.endDate ? ` · até ${formatFullDate(item.endDate)}` : ''}
+                </span>
+              </div>
+              <span className={`text-sm font-semibold ${item.value >= 0 ? 'text-positive' : 'text-negative'}`}>
+                {formatSignedCurrency(item.value)}
+              </span>
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={() => openEdit(item)}
+                  aria-label={`Editar ${item.description}`}
+                  className="w-8 h-8 flex items-center justify-center rounded-lg text-muted bg-card"
+                >
+                  <Pencil size={14} />
+                </button>
+                <button
+                  onClick={() => setPendingDelete(item)}
+                  aria-label={`Remover ${item.description}`}
+                  className="w-8 h-8 flex items-center justify-center rounded-lg text-negative bg-card"
+                >
+                  <Trash2 size={14} />
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {formOpen && (
+        <FixedTransactionFormModal
+          initial={
+            editing
+              ? {
+                  description: editing.description,
+                  value: editing.value,
+                  accountId: editing.accountId,
+                  categoryId: editing.categoryId,
+                  startDate: editing.startDate.slice(0, 10),
+                  endDate: editing.endDate ? editing.endDate.slice(0, 10) : null,
+                }
+              : { ...EMPTY_FIXED_FORM, accountId: accounts?.[0]?.id ?? '', startDate: todayDateInputValue() }
+          }
+          title={editing ? 'Editar fixo' : 'Novo fixo'}
+          pending={pending}
+          accounts={accounts ?? []}
+          categories={flatCategories}
+          onCancel={() => setFormOpen(false)}
+          onSubmit={handleSubmit}
+        />
+      )}
+
+      {pendingDelete && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4">
+          <div className="w-full max-w-sm rounded-2xl bg-card p-5 flex flex-col gap-4">
+            <div className="flex flex-col gap-1.5">
+              <h2 className="text-base font-bold">Remover fixo</h2>
+              <p className="text-sm text-muted">
+                Isso vai remover <span className="font-semibold text-white">{pendingDelete.description}</span> dos
+                fixos e das próximas estimativas.
+              </p>
+            </div>
+            <div className="flex items-center justify-end gap-2.5">
+              <button
+                onClick={() => setPendingDelete(null)}
+                disabled={deleteFixed.isPending}
+                className="h-9 px-4 rounded-lg text-sm font-semibold text-muted disabled:opacity-60"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={handleDelete}
+                disabled={deleteFixed.isPending}
+                className="h-9 px-4 rounded-lg text-sm font-semibold bg-negative disabled:opacity-60"
+              >
+                {deleteFixed.isPending ? 'Removendo...' : 'Remover'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function FixedTransactionFormModal({
+  initial,
+  title,
+  pending,
+  accounts,
+  categories,
+  onCancel,
+  onSubmit,
+}: {
+  initial: FixedTransactionInput
+  title: string
+  pending: boolean
+  accounts: { id: string; name: string }[]
+  categories: { id: string; name: string }[]
+  onCancel: () => void
+  onSubmit: (input: FixedTransactionInput) => void
+}) {
+  const [description, setDescription] = useState(initial.description)
+  const [value, setValue] = useState(String(initial.value))
+  const [accountId, setAccountId] = useState(initial.accountId)
+  const [categoryId, setCategoryId] = useState(initial.categoryId ?? '')
+  const [startDate, setStartDate] = useState(initial.startDate)
+  const [endDate, setEndDate] = useState(initial.endDate ?? '')
+
+  const valid = description.trim().length > 0 && accountId.length > 0 && startDate.length > 0
+
+  function handleSubmit(e: React.FormEvent) {
+    e.preventDefault()
+    if (!valid) return
+    onSubmit({
+      description: description.trim(),
+      value: Number(value.replace(',', '.')) || 0,
+      accountId,
+      categoryId: categoryId || null,
+      startDate: `${startDate}T00:00:00`,
+      endDate: endDate ? `${endDate}T00:00:00` : null,
+    })
+  }
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4">
+      <form onSubmit={handleSubmit} className="w-full max-w-sm rounded-2xl bg-card p-5 flex flex-col gap-4">
+        <h2 className="text-base font-bold">{title}</h2>
+
+        <label className="flex flex-col gap-1.5">
+          <span className="text-xs text-muted">Descrição</span>
+          <input
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            autoFocus
+            className="h-10 px-3 rounded-lg bg-surface border border-border text-sm outline-none"
+          />
+        </label>
+
+        <label className="flex flex-col gap-1.5">
+          <span className="text-xs text-muted">Valor (negativo para despesa)</span>
+          <input
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+            inputMode="decimal"
+            className="h-10 px-3 rounded-lg bg-surface border border-border text-sm outline-none"
+          />
+        </label>
+
+        <label className="flex flex-col gap-1.5">
+          <span className="text-xs text-muted">Conta</span>
+          <select
+            value={accountId}
+            onChange={(e) => setAccountId(e.target.value)}
+            className="h-10 px-3 rounded-lg bg-surface border border-border text-sm outline-none"
+          >
+            {accounts.map((a) => (
+              <option key={a.id} value={a.id}>
+                {a.name}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <label className="flex flex-col gap-1.5">
+          <span className="text-xs text-muted">Categoria</span>
+          <select
+            value={categoryId}
+            onChange={(e) => setCategoryId(e.target.value)}
+            className="h-10 px-3 rounded-lg bg-surface border border-border text-sm outline-none"
+          >
+            <option value="">Sem categoria</option>
+            {categories.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.name}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <label className="flex flex-col gap-1.5">
+          <span className="text-xs text-muted">A partir de</span>
+          <input
+            type="date"
+            value={startDate}
+            onChange={(e) => setStartDate(e.target.value)}
+            className="h-10 px-3 rounded-lg bg-surface border border-border text-sm outline-none"
+          />
+        </label>
+
+        <label className="flex flex-col gap-1.5">
+          <span className="text-xs text-muted">Até (opcional — deixe vazio se não tem fim)</span>
+          <input
+            type="date"
+            value={endDate}
+            onChange={(e) => setEndDate(e.target.value)}
+            className="h-10 px-3 rounded-lg bg-surface border border-border text-sm outline-none"
+          />
+        </label>
+
+        <div className="flex items-center justify-end gap-2.5">
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={pending}
+            className="h-9 px-4 rounded-lg text-sm font-semibold text-muted disabled:opacity-60"
+          >
+            Cancelar
+          </button>
+          <button
+            type="submit"
+            disabled={pending || !valid}
+            className="h-9 px-4 rounded-lg text-sm font-semibold bg-brand disabled:opacity-60"
+          >
+            {pending ? 'Salvando...' : 'Salvar'}
+          </button>
+        </div>
+      </form>
+    </div>
+  )
+}
+
+function flattenCategories(categories: CategoryResponse[]): { id: string; name: string }[] {
+  const result: { id: string; name: string }[] = []
+  for (const c of categories) {
+    result.push({ id: c.id, name: c.name })
+    for (const child of c.children) result.push({ id: child.id, name: `${c.name} / ${child.name}` })
+  }
+  return result
 }

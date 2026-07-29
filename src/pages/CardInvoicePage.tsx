@@ -11,6 +11,7 @@ import { buildCategoryBreakdown } from '../utils/categoryBreakdown'
 import { formatCurrency, formatSignedCurrency } from '../utils/currency'
 import { formatFullDate, formatMonthAbbr, formatMonthYear, formatShortDate } from '../utils/date'
 import { resolveCategoryIcon } from '../utils/categoryIcon'
+import { groupPreviewTransactions, previewSourceLabel } from '../utils/previewGroups'
 import type { TransactionContract } from '../api/types'
 import type { CategorySlice } from '../utils/categoryBreakdown'
 
@@ -313,37 +314,6 @@ function PreviewGroupHeader({ label, subtotal }: { label: string; subtotal: numb
       </span>
     </div>
   )
-}
-
-function previewSourceLabel(source: TransactionContract['previewSource']): string | null {
-  if (source === 'Fixed') return 'Fixo'
-  if (source === 'Installment') return 'Parcela'
-  if (source === 'CategoryAverage') return 'Média'
-  return null
-}
-
-// Installments and fixed items are known/near-certain recurring charges; category averages are the
-// vaguest estimate — so they're grouped in that order, each with its own subtotal, instead of one
-// flat list sorted purely by value.
-const PREVIEW_GROUP_ORDER: Record<string, number> = { Installment: 0, Fixed: 1, CategoryAverage: 2 }
-const PREVIEW_GROUP_LABEL: Record<string, string> = { Installment: 'Parcelas', Fixed: 'Fixos', CategoryAverage: 'Média' }
-
-function groupPreviewTransactions(transactions: TransactionContract[]) {
-  const bySource = new Map<string, TransactionContract[]>()
-  for (const tx of transactions) {
-    const key = tx.previewSource ?? 'Outros'
-    if (!bySource.has(key)) bySource.set(key, [])
-    bySource.get(key)?.push(tx)
-  }
-
-  return [...bySource.entries()]
-    .sort(([a], [b]) => (PREVIEW_GROUP_ORDER[a] ?? 99) - (PREVIEW_GROUP_ORDER[b] ?? 99))
-    .map(([source, items]) => ({
-      source,
-      label: PREVIEW_GROUP_LABEL[source] ?? source,
-      items: [...items].sort((a, b) => Math.abs(b.value) - Math.abs(a.value)),
-      subtotal: items.reduce((sum, tx) => sum + tx.value, 0),
-    }))
 }
 
 function FilterChips({

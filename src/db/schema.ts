@@ -89,6 +89,10 @@ export const fixedTransactions = pgTable('fixed_transactions', {
   id: text('id').primaryKey(),
   description: text('description'),
   startDate: timestamp('start_date', { mode: 'string' }).notNull(),
+  // Nullable: open-ended fixed transactions (rent, salary) have no end. Installments with a known
+  // last month (e.g. a wedding vendor paid through Oct/2026) or single-month one-offs set this to
+  // bound how far getAccountPreview projects them forward.
+  endDate: timestamp('end_date', { mode: 'string' }),
   value: numeric('value', { mode: 'number' }).notNull(),
   accountId: text('account_id')
     .notNull()

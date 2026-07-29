@@ -1,9 +1,15 @@
 import { and, eq, inArray, sql } from 'drizzle-orm'
 import { db } from '../db/client'
-import { accounts, categories, invoices, subCards, transactionTags, transactions, tags } from '../db/schema'
+import { accounts, categories, fixedTransactions, invoices, subCards, transactionTags, transactions, tags } from '../db/schema'
 import { TypeAccount } from '../api/types'
-import type { AccountResponse, CashFlowContract, TransactionContract, TransactionInvoiceResponse } from '../api/types'
-import { addMonths, monthsBetween, parseNaiveTimestamp, makeDate, toNaiveTimestamp } from './dates'
+import type {
+  AccountPreviewResponse,
+  AccountResponse,
+  CashFlowContract,
+  TransactionContract,
+  TransactionInvoiceResponse,
+} from '../api/types'
+import { addMonths, monthsBetween, parseNaiveTimestamp, makeDate, toNaiveTimestamp, daysInMonth } from './dates'
 
 function emptyAccountResponse(): AccountResponse {
   return {
@@ -579,4 +585,215 @@ export async function getInvoicePreview(
     value: previewItems.reduce((sum, i) => sum + i.value, 0),
     transactions: previewItems,
   }
+}
+
+// Bank-account analogue of getInvoicePreview. There's no invoices table (statement/window) for
+// checking accounts, so the window is just the calendar month, and "known" items come from the
+// user-managed fixedTransactions table instead of description-regex/variance heuristics — the user
+// decides what's fixed, unlike the card's auto-detected "Fixed" group.
+export async function getAccountPreview(year: number, month: number): Promise<AccountPreviewResponse> {
+  const targetDate = makeDate(year, month, 1)
+
+  const accountRows = await db
+    .select()
+    .from(accounts)
+    .where(and(eq(accounts.deleted, false), eq(accounts.typeAccount, TypeAccount.Account)))
+  const accountIds = accountRows.map((a) => a.id)
+  const accountById = new Map(accountRows.map((a) => [a.id, a]))
+  if (accountIds.length === 0) return { value: 0, transactions: [] }
+
+  const [transferCategory] = await db
+    .select({ id: categories.id })
+    .from(categories)
+    .where(eq(categories.name, 'Transferências'))
+    .limit(1)
+  const transferCategoryId = transferCategory?.id ?? null
+
+  const fixedRows = await db
+    .select({
+      id: fixedTransactions.id,
+      description: fixedTransactions.description,
+      value: fixedTransactions.value,
+      accountId: fixedTransactions.accountId,
+      categoryId: fixedTransactions.categoryId,
+      startDate: fixedTransactions.startDate,
+      endDate: fixedTransactions.endDate,
+      categoryName: categories.name,
+      categoryColor: categories.color,
+      categoryIcon: categories.icon,
+    })
+    .from(fixedTransactions)
+    .leftJoin(categories, eq(categories.id, fixedTransactions.categoryId))
+    .where(and(inArray(fixedTransactions.accountId, accountIds), eq(fixedTransactions.deleted, false)))
+
+  const activeFixed = fixedRows.filter((f) => {
+    const start = parseNaiveTimestamp(f.startDate)
+    if (makeDate(start.getFullYear(), start.getMonth() + 1, 1) > targetDate) return false
+    if (!f.endDate) return true
+    const end = parseNaiveTimestamp(f.endDate)
+    return makeDate(end.getFullYear(), end.getMonth() + 1, 1) >= targetDate
+  })
+
+  const monthDayCount = daysInMonth(year, month)
+  // Fixed/CategoryAverage preview rows are estimates for a whole future month, but each one is
+  // pinned to a plausible day-of-month (the fixed transaction's own recurring day, or the historical
+  // average day for a category) instead of always the 1st — this lets the account preview render
+  // as a day-by-day forecast (see TransactionsPage's day-grouped preview) instead of one flat list.
+  function previewDueDate(desiredDay: number): string {
+    return toNaiveTimestamp(makeDate(year, month, Math.min(Math.max(1, desiredDay), monthDayCount)))
+  }
+
+  const previewItems: TransactionContract[] = []
+  const excludedCategoryIds = new Set<string>()
+  if (transferCategoryId) excludedCategoryIds.add(transferCategoryId)
+
+  for (const f of activeFixed) {
+    if (f.categoryId) excludedCategoryIds.add(f.categoryId)
+    previewItems.push({
+      id: crypto.randomUUID(),
+      type: f.value < 0 ? 1 : 0,
+      description: f.description ?? '',
+      value: f.value,
+      account: accountById.get(f.accountId)?.name ?? '',
+      accountId: f.accountId,
+      accountTo: '',
+      paidOut: false,
+      typeTransaction: 0,
+      dueDate: previewDueDate(parseNaiveTimestamp(f.startDate).getDate()),
+      categoryId: f.categoryId ?? '',
+      categoryName: f.categoryName ?? '',
+      icon: f.categoryIcon ?? '',
+      color: f.categoryColor ?? '',
+      subCardId: null,
+      subCardLast4: null,
+      subCardHolderName: null,
+      transactionTags: [],
+      accountTags: [],
+      recurrencyType: null,
+      frequencyType: 5,
+      previewSource: 'Fixed',
+      previewEndDate: f.endDate,
+    })
+  }
+
+  const lookbackStart = addMonths(targetDate, -3)
+  const allTx = await db
+    .select({
+      value: transactions.value,
+      dueDate: transactions.dueDate,
+      categoryId: transactions.categoryId,
+      categoryName: categories.name,
+      categoryColor: categories.color,
+      categoryIcon: categories.icon,
+    })
+    .from(transactions)
+    .leftJoin(categories, eq(categories.id, transactions.categoryId))
+    .where(and(inArray(transactions.accountId, accountIds), eq(transactions.deleted, false)))
+
+  const lookbackTransactions = allTx.filter((t) => {
+    const d = parseNaiveTimestamp(t.dueDate)
+    return d >= lookbackStart && d < targetDate && !excludedCategoryIds.has(t.categoryId ?? '')
+  })
+
+  const distinctMonths = new Set(
+    lookbackTransactions.map((t) => {
+      const d = parseNaiveTimestamp(t.dueDate)
+      return `${d.getFullYear()}-${d.getMonth()}`
+    }),
+  )
+  const monthsInWindow = Math.max(1, distinctMonths.size)
+
+  const categoryGroups = new Map<string, typeof lookbackTransactions>()
+  for (const t of lookbackTransactions) {
+    const key = t.categoryId ?? ''
+    const list = categoryGroups.get(key) ?? []
+    list.push(t)
+    categoryGroups.set(key, list)
+  }
+
+  for (const group of categoryGroups.values()) {
+    const average = group.reduce((sum, t) => sum + t.value, 0) / monthsInWindow
+    if (average === 0) continue
+
+    const sample = group[0]
+    const avgDay = Math.round(
+      group.reduce((sum, t) => sum + parseNaiveTimestamp(t.dueDate).getDate(), 0) / group.length,
+    )
+    previewItems.push({
+      id: crypto.randomUUID(),
+      type: average < 0 ? 1 : 0,
+      description: sample.categoryName ?? '',
+      value: average,
+      account: '',
+      accountId: '',
+      accountTo: '',
+      paidOut: false,
+      typeTransaction: 0,
+      dueDate: previewDueDate(avgDay),
+      categoryId: sample.categoryId ?? '',
+      categoryName: sample.categoryName ?? '',
+      icon: sample.categoryIcon ?? '',
+      color: sample.categoryColor ?? '',
+      subCardId: null,
+      subCardLast4: null,
+      subCardHolderName: null,
+      transactionTags: [],
+      accountTags: [],
+      recurrencyType: null,
+      frequencyType: 5,
+      previewSource: 'CategoryAverage',
+    })
+  }
+
+  previewItems.sort((a, b) => (a.categoryName ?? '').localeCompare(b.categoryName ?? ''))
+
+  return {
+    value: previewItems.reduce((sum, i) => sum + i.value, 0),
+    transactions: previewItems,
+  }
+}
+
+export interface CardPreviewGroup {
+  cardId: string
+  cardName: string
+  value: number
+  // The card's own due day (accounts.dueDate), resolved into the target month — lets the account
+  // preview place one aggregated "Cartão X" row on its actual invoice due date within the
+  // day-by-day forecast, instead of spreading its per-category breakdown across the list.
+  dueDate: string
+  transactions: TransactionContract[]
+}
+
+// Aggregates each card's own getInvoicePreview for one month so the unified Transações page can
+// show estimated card spend alongside the bank-account preview above, kept in a separate group per
+// card so it reads as "card estimate" rather than being folded into the account's own forecast.
+// Same empty-invoice gate CardInvoicePage uses per card: only cards without real data this month
+// are included.
+export async function getCardsPreview(year: number, month: number): Promise<CardPreviewGroup[]> {
+  const cardRows = await db
+    .select()
+    .from(accounts)
+    .where(and(eq(accounts.deleted, false), eq(accounts.typeAccount, TypeAccount.Card)))
+
+  const monthDayCount = daysInMonth(year, month)
+
+  const results: CardPreviewGroup[] = []
+  for (const card of cardRows) {
+    const invoice = await getInvoice(card.id, year, month)
+    const isEmpty = !invoice || invoice.transactions.length === 0
+    if (!isEmpty) continue
+
+    const preview = await getInvoicePreview(card.id, year, month)
+    if (!preview || preview.transactions.length === 0) continue
+
+    const dueDay = Math.min(Math.max(1, card.dueDate || 1), monthDayCount)
+    results.push({
+      cardId: card.id,
+      cardName: card.name ?? '',
+      value: preview.value,
+      dueDate: toNaiveTimestamp(makeDate(year, month, dueDay)),
+      transactions: preview.transactions,
+    })
+  }
+  return results
 }

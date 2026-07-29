@@ -1,4 +1,10 @@
-import { getCards as getCardsService, getInvoice as getInvoiceService, getInvoicePreview as getInvoicePreviewService, payInvoice as payInvoiceService } from '../services/accountService'
+import {
+  getCards as getCardsService,
+  getInvoice as getInvoiceService,
+  getInvoicePreview as getInvoicePreviewService,
+  getCardsPreview as getCardsPreviewService,
+  payInvoice as payInvoiceService,
+} from '../services/accountService'
 import { importItauFatura as importItauFaturaService } from '../services/importItau'
 
 export function getCards() {
@@ -11,6 +17,10 @@ export function getInvoice(cardId: string, year: number, month: number) {
 
 export function getInvoicePreview(cardId: string, year: number, month: number) {
   return getInvoicePreviewService(cardId, year, month)
+}
+
+export function getCardsPreview(year: number, month: number) {
+  return getCardsPreviewService(year, month)
 }
 
 export function payInvoice(invoiceId: string, status: boolean) {

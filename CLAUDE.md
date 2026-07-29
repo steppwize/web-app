@@ -127,11 +127,36 @@ statement month, replaces that invoice's transactions wholesale on re-import, tr
 digits, and runs each transaction through `ruleService` for auto-categorization. Known synthetic rows
 ("pagamento efetuado", installment-credit lines) are explicitly skipped rather than imported.
 
-### Scope notes
+### Statement/account previews
 
-`fixed_transactions` (recurring transactions) has a schema but no service/UI layer yet — core-api's
-recurrence expansion (`SplitFixedTransactions`/`LoopUntil`) is out of scope for the current port.
-Current transaction queries only cover concrete `transactions` rows.
+When a card invoice or a bank-account month has no real transactions yet, the app estimates one
+instead of showing empty. Both paths return a synthetic list of `TransactionContract`s tagged with
+`previewSource` (`'Installment' | 'Fixed' | 'CategoryAverage'`), grouped/labeled by
+[src/utils/previewGroups.ts](src/utils/previewGroups.ts) and rendered identically in
+[src/pages/CardInvoicePage.tsx](src/pages/CardInvoicePage.tsx) and
+[src/pages/TransactionsPage.tsx](src/pages/TransactionsPage.tsx).
+
+- **Cards** — `getInvoicePreview` in [src/services/accountService.ts](src/services/accountService.ts)
+  windows off the last real `invoices` row (no invoices table exists yet for the target month → no
+  fixed calendar boundary). It detects known installments via the `[Parcela N de Total]` description
+  convention (`previewSource: 'Installment'`), near-constant recurring charges via normalized-description
+  grouping + a 15% value-variance tolerance (`'Fixed'`), then averages whatever's left per category over
+  the lookback window (`'CategoryAverage'`).
+- **Bank accounts** — `getAccountPreview` in the same file is the analogous entry point, but the window
+  is just the calendar month (no invoices table for checking accounts) and "Fixed" is **not**
+  auto-detected — it comes from user-managed rows in `fixed_transactions` (see below), since bank
+  transactions have no installment-style description marker to key off of. Category-average grouping
+  excludes any category already claimed by an active fixed transaction, to avoid double-counting.
+
+### Fixed transactions (bank accounts only)
+
+`fixed_transactions` now has a real service/UI layer
+([src/services/fixedTransactionService.ts](src/services/fixedTransactionService.ts), managed from a
+modal in `TransactionsPage.tsx`), but it's intentionally a light-weight feed for `getAccountPreview`
+above — not a port of core-api's recurrence engine. Every row is forced to `frequencyType: Monthly` and
+"applies" to a target month via a simple `startDate <= targetMonth` check; there is no `LoopUntil`/
+`SplitFixedTransactions`-style expansion into concrete future `transactions` rows, no support for other
+frequencies, and no card-account usage (cards get their "Fixed" group heuristically, see above).
 
 ## Conventions
 
