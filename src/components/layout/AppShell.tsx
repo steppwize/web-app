@@ -1,6 +1,8 @@
 import type { ReactNode } from 'react'
 import { Sidebar } from './Sidebar'
 import { BottomTabBar } from './BottomTabBar'
+import { ChatButton } from '../chat/ChatButton'
+import { ChatModal } from '../chat/ChatModal'
 
 export function AppShell({ children }: { children: ReactNode }) {
   return (
@@ -8,6 +10,8 @@ export function AppShell({ children }: { children: ReactNode }) {
       <Sidebar />
       <div className="flex-1 min-w-0 pb-28 lg:pb-0">{children}</div>
       <BottomTabBar />
+      <ChatButton />
+      <ChatModal />
     </div>
   )
 }

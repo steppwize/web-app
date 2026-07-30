@@ -37,37 +37,91 @@ function mapTokenError(type: string | undefined): string {
 
 let cachedToken: { token: string; expiresAt: number } | null = null
 let tokenClient: GoogleTokenClient | null = null
+// A single tokenClient is reused across calls (GIS caches the popup channel), but its `callback`
+// closure is fixed at construction time. `currentRequest` lets that one callback resolve whichever
+// getAccessToken() call is currently in flight, instead of only ever resolving the first one.
+let currentRequest: { resolve: (token: string) => void; reject: (error: Error) => void } | null = null
 
-export async function getAccessToken(): Promise<string> {
-  if (cachedToken && cachedToken.expiresAt - Date.now() > 60_000) {
-    return cachedToken.token
-  }
+// True once the user has completed the popup consent flow at least once in this browser profile.
+// Used to pass `prompt: ''` on subsequent requests, which skips the consent screen when Google still
+// recognizes a valid grant — the request then only shows UI if the grant was actually revoked.
+let hasGrantedBefore = false
+
+function requestToken(promptOverride?: string): Promise<string> {
   const clientId = import.meta.env.VITE_GOOGLE_CLIENT_ID
   if (!clientId) {
-    throw new Error('Integração com o Google Drive não está configurada.')
+    return Promise.reject(new Error('Integração com o Google Drive não está configurada.'))
   }
-  await loadGis()
-
   return new Promise((resolve, reject) => {
     tokenClient ??= window.google!.accounts.oauth2.initTokenClient({
       client_id: clientId,
       scope: DRIVE_FILE_SCOPE,
       callback: (response) => {
+        const req = currentRequest
+        currentRequest = null
         if (response.error) {
-          reject(new Error(mapTokenError(response.error)))
+          req?.reject(new Error(mapTokenError(response.error)))
           return
         }
+        hasGrantedBefore = true
         cachedToken = { token: response.access_token, expiresAt: Date.now() + response.expires_in * 1000 }
-        resolve(response.access_token)
+        req?.resolve(response.access_token)
       },
-      error_callback: (error) => reject(new Error(mapTokenError(error.type))),
+      error_callback: (error) => {
+        const req = currentRequest
+        currentRequest = null
+        req?.reject(new Error(mapTokenError(error.type)))
+      },
     })
-    tokenClient.requestAccessToken()
+    currentRequest = { resolve, reject }
+    tokenClient.requestAccessToken(promptOverride === undefined ? undefined : { prompt: promptOverride })
   })
+}
+
+export function hasValidToken(): boolean {
+  return cachedToken !== null && cachedToken.expiresAt - Date.now() > 60_000
+}
+
+export function tokenExpiresInMs(): number | null {
+  return cachedToken ? cachedToken.expiresAt - Date.now() : null
+}
+
+// Returns the cached token if still valid, otherwise null — never opens a popup. For background
+// paths (autosave debounce, polling) that must not surprise the user with a Google window.
+export function getAccessTokenSilent(): string | null {
+  return hasValidToken() ? cachedToken!.token : null
+}
+
+export async function getAccessToken(): Promise<string> {
+  if (hasValidToken()) {
+    return cachedToken!.token
+  }
+  await loadGis()
+  return requestToken(hasGrantedBefore ? '' : undefined)
+}
+
+// Meant to be called from inside a genuine user gesture handler (e.g. a capture-phase pointerdown
+// listener) so the popup isn't blocked. Passes prompt: '' when a grant already exists in this
+// profile, which normally lets GIS reissue a token without showing any UI at all.
+export async function renewTokenFromGesture(): Promise<string | null> {
+  if (hasValidToken() || !hasGrantedBefore) return null
+  try {
+    await loadGis()
+    return await requestToken('')
+  } catch {
+    return null
+  }
 }
 
 export function clearCachedToken(): void {
   cachedToken = null
+}
+
+// hasGrantedBefore only lives in memory (reset on reload) unless a caller hydrates it from a
+// persisted flag — used by autoSync to restore the "skip consent screen" behavior across reloads
+// for users who already granted access in this browser profile.
+export function hydrateGrantedBefore(granted: boolean): void {
+  hasGrantedBefore = granted
 }
 
 export function revokeGoogleAccess(): void {
@@ -76,4 +130,5 @@ export function revokeGoogleAccess(): void {
   }
   cachedToken = null
   tokenClient = null
+  hasGrantedBefore = false
 }

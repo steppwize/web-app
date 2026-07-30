@@ -1,12 +1,17 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ChevronLeft, CloudUpload, Download, RefreshCw, Trash2, Upload, X } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { createBackupBlob, exportBackup } from '../backup/export'
 import { restoreBackup } from '../backup/restore'
-import { isDriveConfigured } from '../backup/googleAuth'
+import { isDriveConfigured, revokeGoogleAccess } from '../backup/googleAuth'
 import { deleteBackup, downloadBackup, listBackups, uploadBackup, type DriveBackup } from '../backup/googleDrive'
+import { disableAutoSync, enableAutoSync, syncNow } from '../backup/autoSync'
+import { getSyncState } from '../backup/syncState'
+import { useSyncStore } from '../store/syncStore'
+import { Toggle } from '../components/ui/Toggle'
 import { useToastStore } from '../store/toastStore'
+import { syncStatusText } from '../utils/syncStatusText'
 
 type PendingRestore = { source: 'local'; file: File } | { source: 'drive'; id: string; name: string }
 
@@ -18,6 +23,53 @@ export function BackupPage() {
   const [busy, setBusy] = useState(false)
   const [uploadingToDrive, setUploadingToDrive] = useState(false)
   const [driveListOpen, setDriveListOpen] = useState(false)
+  const [autoSyncEnabled, setAutoSyncEnabled] = useState(() => getSyncState().autoSyncEnabled)
+  const [autoSyncBusy, setAutoSyncBusy] = useState(false)
+  const syncStatus = useSyncStore((s) => s.status)
+  const lastSyncedAt = useSyncStore((s) => s.lastSyncedAt)
+  const syncErrorMessage = useSyncStore((s) => s.errorMessage)
+  // Forces a re-render every 30s so "Sincronizado há X min" keeps advancing without a live sync event.
+  const [, tick] = useState(0)
+  useEffect(() => {
+    const id = setInterval(() => tick((t) => t + 1), 30_000)
+    return () => clearInterval(id)
+  }, [])
+
+  async function handleToggleAutoSync(checked: boolean) {
+    setAutoSyncBusy(true)
+    try {
+      if (checked) {
+        await enableAutoSync()
+      } else {
+        disableAutoSync()
+      }
+      setAutoSyncEnabled(checked)
+    } catch (error) {
+      useToastStore
+        .getState()
+        .show(error instanceof Error ? error.message : 'Falha ao ativar sincronização automática.')
+    } finally {
+      setAutoSyncBusy(false)
+    }
+  }
+
+  async function handleSyncNow() {
+    setAutoSyncBusy(true)
+    try {
+      await syncNow({ interactive: true })
+    } catch (error) {
+      useToastStore.getState().show(error instanceof Error ? error.message : 'Falha ao sincronizar.')
+    } finally {
+      setAutoSyncBusy(false)
+    }
+  }
+
+  function handleDisconnect() {
+    revokeGoogleAccess()
+    disableAutoSync()
+    setAutoSyncEnabled(false)
+    useToastStore.getState().show('Desconectado do Google Drive.')
+  }
 
   async function handleExport() {
     setBusy(true)
@@ -132,6 +184,46 @@ export function BackupPage() {
               Ver backups
             </button>
           </div>
+        </div>
+      )}
+
+      {isDriveConfigured && (
+        <div className="flex flex-col gap-3 p-4 rounded-2xl bg-card border border-border">
+          <div className="flex items-center justify-between gap-3">
+            <h2 className="text-sm font-semibold">Sincronização automática</h2>
+            <div className={autoSyncBusy ? 'opacity-60 pointer-events-none' : ''}>
+              <Toggle checked={autoSyncEnabled} onChange={handleToggleAutoSync} />
+            </div>
+          </div>
+          <p className="text-xs text-muted">
+            Conforme você altera seus dados, um backup é enviado sozinho para um arquivo único (
+            <span className="font-mono">steppwize-autosave.tar.gz</span>) no Google Drive — os backups manuais
+            acima continuam separados. Se outro dispositivo salvar dados mais novos, este dispositivo busca a
+            atualização sozinho, ou pergunta antes de substituir se houver alterações daqui ainda não enviadas.
+          </p>
+          {autoSyncEnabled && (
+            <>
+              <p className={`text-xs ${syncStatus === 'error' ? 'text-negative' : 'text-muted'}`}>
+                {syncStatusText(syncStatus, lastSyncedAt, syncErrorMessage)}
+              </p>
+              <div className="flex items-center gap-2.5">
+                <button
+                  onClick={handleSyncNow}
+                  disabled={autoSyncBusy || syncStatus === 'syncing'}
+                  className="flex items-center gap-2 h-9 px-3.5 rounded-[10px] bg-surface border border-border text-xs font-semibold disabled:opacity-60"
+                >
+                  <RefreshCw size={14} /> Sincronizar agora
+                </button>
+                <button
+                  onClick={handleDisconnect}
+                  disabled={autoSyncBusy}
+                  className="h-9 px-3.5 rounded-[10px] bg-surface border border-border text-xs font-semibold text-negative disabled:opacity-60"
+                >
+                  Desconectar do Google
+                </button>
+              </div>
+            </>
+          )}
         </div>
       )}
 

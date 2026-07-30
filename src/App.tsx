@@ -1,7 +1,10 @@
 import { BrowserRouter, Routes, Route } from 'react-router-dom'
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { MutationCache, QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { AppShell } from './components/layout/AppShell'
 import { ToastHost } from './components/ui/ToastHost'
+import { SyncRunner } from './components/sync/SyncRunner'
+import { SyncConflictModal } from './components/sync/SyncConflictModal'
+import { markDirty } from './backup/autoSync'
 import { HomePage } from './pages/HomePage'
 import { TransactionsPage } from './pages/TransactionsPage'
 import { AccountsPage } from './pages/AccountsPage'
@@ -12,7 +15,14 @@ import { TagsPage } from './pages/TagsPage'
 import { BackupPage } from './pages/BackupPage'
 import { NotFoundPage } from './pages/NotFoundPage'
 
-const queryClient = new QueryClient()
+// A single MutationCache-level onSuccess covers every useMutation in the app (transactions,
+// accounts, categories, tags, fixed transactions, OFX/Itaú imports, invoice payment) without
+// touching each call site — per-mutation onSuccess handlers don't override this one.
+const queryClient = new QueryClient({
+  mutationCache: new MutationCache({
+    onSuccess: () => markDirty(),
+  }),
+})
 
 function ShellRoute({ children }: { children: React.ReactNode }) {
   return <AppShell>{children}</AppShell>
@@ -90,6 +100,8 @@ function App() {
           <Route path="*" element={<NotFoundPage />} />
         </Routes>
         <ToastHost />
+        <SyncRunner />
+        <SyncConflictModal />
       </BrowserRouter>
     </QueryClientProvider>
   )

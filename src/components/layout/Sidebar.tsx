@@ -1,8 +1,14 @@
 import { NavLink } from 'react-router-dom'
 import { Wallet } from 'lucide-react'
 import { NAV_ITEMS } from './navItems'
+import { useSyncStore } from '../../store/syncStore'
+import { syncStatusText } from '../../utils/syncStatusText'
 
 export function Sidebar() {
+  const syncStatus = useSyncStore((s) => s.status)
+  const lastSyncedAt = useSyncStore((s) => s.lastSyncedAt)
+  const syncErrorMessage = useSyncStore((s) => s.errorMessage)
+
   return (
     <aside className="hidden lg:flex w-60 shrink-0 flex-col border-r border-border bg-surface">
       <div className="flex items-center gap-2.5 h-[72px] px-5">
@@ -28,7 +34,7 @@ export function Sidebar() {
       </nav>
       <div className="border-t border-border px-5 py-3.5 flex flex-col gap-1">
         <NavLink to="/backup" className="text-xs text-muted hover:text-white">
-          Dados salvos neste dispositivo
+          {syncStatus === 'off' ? 'Dados salvos neste dispositivo' : syncStatusText(syncStatus, lastSyncedAt, syncErrorMessage)}
         </NavLink>
         <span className="text-[10px] text-muted/60">v{__COMMIT_SHA__}</span>
       </div>

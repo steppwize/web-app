@@ -113,6 +113,39 @@ export const rules = pgTable('rules', {
   ...audit,
 })
 
+// Single-row table (fixed id 'default') holding the user's configured LLM provider for the chat
+// assistant. Unlike the Google Drive OAuth token (kept in-memory only, see backup/googleAuth.ts),
+// this key is a long-lived credential the user expects to persist across reloads, so it goes
+// through the same PGlite/IndexedDB store as everything else in this local-first app.
+export const llmSettings = pgTable('llm_settings', {
+  id: text('id').primaryKey(),
+  provider: text('provider').notNull(),
+  apiKey: text('api_key').notNull(),
+  model: text('model').notNull(),
+  updatedAt: timestamp('updated_at', { mode: 'string' }).notNull().defaultNow(),
+})
+
+// Single-row table (fixed id 'default') holding the assistant's conversation as one JSON blob —
+// the whole `useChat` messages array, replace-on-write. A single conversation (no per-thread
+// modeling) matches how ChatModal is used today; message `parts` already have arbitrary shapes
+// (text, tool calls, approvals), so storing them as opaque JSON avoids modeling that structure
+// relationally for no benefit in a single-user local app.
+export const chatHistory = pgTable('chat_history', {
+  id: text('id').primaryKey(),
+  messages: text('messages').notNull(),
+  updatedAt: timestamp('updated_at', { mode: 'string' }).notNull().defaultNow(),
+})
+
+// Freeform notes the chat assistant writes about itself via the `saveMemory` tool (services/chat/
+// tools.ts) — durable context (user preferences, recurring corrections) it decides is worth
+// persisting across conversations. Loaded into the agent's system prompt on every new session
+// (services/chat/agent.ts), not just exposed as a tool result.
+export const agentMemories = pgTable('agent_memories', {
+  id: text('id').primaryKey(),
+  content: text('content').notNull(),
+  createdAt: timestamp('created_at', { mode: 'string' }).notNull().defaultNow(),
+})
+
 export const accountTag = pgTable(
   'account_tag',
   {

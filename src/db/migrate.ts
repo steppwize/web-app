@@ -112,6 +112,26 @@ create table if not exists rules (
 );
 create index if not exists idx_rules_priority on rules(priority);
 
+create table if not exists llm_settings (
+  id text primary key,
+  provider text not null,
+  api_key text not null,
+  model text not null,
+  updated_at timestamp not null default now()
+);
+
+create table if not exists chat_history (
+  id text primary key,
+  messages text not null,
+  updated_at timestamp not null default now()
+);
+
+create table if not exists agent_memories (
+  id text primary key,
+  content text not null,
+  created_at timestamp not null default now()
+);
+
 create table if not exists account_tag (
   account_id text not null references accounts(id) on delete cascade,
   tag_id text not null references tags(id) on delete cascade,

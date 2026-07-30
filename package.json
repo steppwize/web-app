@@ -11,14 +11,21 @@
     "test:e2e": "playwright test"
   },
   "dependencies": {
+    "@ai-sdk/anthropic": "^4.0.24",
+    "@ai-sdk/google": "^4.0.28",
+    "@ai-sdk/openai": "^4.0.24",
+    "@ai-sdk/react": "^4.0.45",
     "@electric-sql/pglite": "^0.5.4",
+    "@openrouter/ai-sdk-provider": "^3.0.0",
     "@tanstack/react-query": "^5.101.4",
+    "ai": "^7.0.42",
     "drizzle-orm": "^0.45.2",
     "lucide-react": "^1.25.0",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
     "react-router-dom": "^7.18.1",
     "xlsx": "^0.18.5",
+    "zod": "^4.4.3",
     "zustand": "^5.0.14"
   },
   "devDependencies": {

@@ -10,7 +10,13 @@ import {
   Trash2,
   CreditCard,
 } from 'lucide-react'
-import { useTransactions } from '../hooks/useTransactions'
+import {
+  useTransactions,
+  useCreateTransaction,
+  useUpdateTransaction,
+  useUpdateTransactionCategory,
+  useDeleteTransaction,
+} from '../hooks/useTransactions'
 import { useHomeCashFlow } from '../hooks/useHomeCashFlow'
 import { useAccountPreview } from '../hooks/useAccountPreview'
 import { useCardsPreview } from '../hooks/useCardsPreview'
@@ -32,6 +38,8 @@ import { computeMonthSummary, computeDayGroups, type DayGroup } from '../utils/m
 import { resolveCategoryIcon } from '../utils/categoryIcon'
 import { groupPreviewTransactions, previewSourceLabel } from '../utils/previewGroups'
 import type { FixedTransactionInput } from '../api/fixedTransactions'
+import type { TransactionInput } from '../api/transactions'
+import { TypeAccount } from '../api/types'
 import type { CategoryResponse, FixedTransactionResponse, TransactionContract } from '../api/types'
 import type { CardPreviewGroup } from '../services/accountService'
 
@@ -53,9 +61,70 @@ export function TransactionsPage() {
   const [showEodBalance, setShowEodBalance] = useState(true)
   const [fixedModalOpen, setFixedModalOpen] = useState(false)
   const [selectedCardPreview, setSelectedCardPreview] = useState<CardPreviewGroup | null>(null)
+  const [txFormOpen, setTxFormOpen] = useState(false)
+  const [editingTx, setEditingTx] = useState<TransactionContract | null>(null)
+  const [categoryEditTx, setCategoryEditTx] = useState<TransactionContract | null>(null)
+  const [pendingDeleteTx, setPendingDeleteTx] = useState<TransactionContract | null>(null)
 
   const { data: txData, isLoading, isError } = useTransactions(month, year)
   const { data: cashFlow } = useHomeCashFlow()
+  const { data: accounts } = useAccounts()
+  const { data: categories } = useCategories()
+  const createTx = useCreateTransaction()
+  const updateTx = useUpdateTransaction()
+  const deleteTx = useDeleteTransaction()
+
+  const bankAccounts = useMemo(() => (accounts ?? []).filter((a) => a.typeAccount === TypeAccount.Account), [accounts])
+  const flatCategories = useMemo(() => (categories ? flattenCategories(categories) : []), [categories])
+
+  function openCreateTransaction() {
+    setEditingTx(null)
+    setTxFormOpen(true)
+  }
+
+  function openEditTransaction(tx: TransactionContract) {
+    setEditingTx(tx)
+    setTxFormOpen(true)
+  }
+
+  function handleTxSubmit(input: TransactionInput) {
+    if (editingTx) {
+      updateTx.mutate(
+        { id: editingTx.id, input },
+        {
+          onSuccess: () => {
+            useToastStore.getState().show('Transação atualizada.')
+            setTxFormOpen(false)
+          },
+          onError: (error) =>
+            useToastStore.getState().show(error instanceof Error ? error.message : 'Falha ao salvar transação.'),
+        },
+      )
+    } else {
+      createTx.mutate(input, {
+        onSuccess: () => {
+          useToastStore.getState().show('Transação criada.')
+          setTxFormOpen(false)
+        },
+        onError: (error) =>
+          useToastStore.getState().show(error instanceof Error ? error.message : 'Falha ao salvar transação.'),
+      })
+    }
+  }
+
+  function handleDeleteTx() {
+    if (!pendingDeleteTx) return
+    deleteTx.mutate(pendingDeleteTx.id, {
+      onSuccess: () => {
+        useToastStore.getState().show('Transação removida.')
+        setPendingDeleteTx(null)
+      },
+      onError: (error) => {
+        useToastStore.getState().show(error instanceof Error ? error.message : 'Falha ao remover transação.')
+        setPendingDeleteTx(null)
+      },
+    })
+  }
 
   const monthSummary = useMemo(() => (txData ? computeMonthSummary(txData) : null), [txData])
   const isEmptyMonth = !!txData && txData.transactions.length === 0
@@ -156,6 +225,48 @@ export function TransactionsPage() {
       {selectedCardPreview && (
         <CardPreviewModal card={selectedCardPreview} onClose={() => setSelectedCardPreview(null)} />
       )}
+      {txFormOpen && (
+        <TransactionFormModal
+          initial={
+            editingTx
+              ? {
+                  description: editingTx.description,
+                  value: editingTx.value,
+                  accountId: editingTx.accountId,
+                  categoryId: editingTx.categoryId || null,
+                  dueDate: editingTx.dueDate.slice(0, 10),
+                  paidOut: editingTx.paidOut,
+                }
+              : { ...EMPTY_TX_FORM, accountId: bankAccounts[0]?.id ?? '', dueDate: todayDateInputValue() }
+          }
+          title={editingTx ? 'Editar transação' : 'Nova transação'}
+          isEditing={!!editingTx}
+          pending={createTx.isPending || updateTx.isPending}
+          accounts={bankAccounts}
+          categories={flatCategories}
+          onCancel={() => setTxFormOpen(false)}
+          onSubmit={handleTxSubmit}
+          onDelete={
+            editingTx
+              ? () => {
+                  setTxFormOpen(false)
+                  setPendingDeleteTx(editingTx)
+                }
+              : undefined
+          }
+        />
+      )}
+      {pendingDeleteTx && (
+        <ConfirmDeleteTransactionModal
+          transaction={pendingDeleteTx}
+          pending={deleteTx.isPending}
+          onCancel={() => setPendingDeleteTx(null)}
+          onConfirm={handleDeleteTx}
+        />
+      )}
+      {categoryEditTx && (
+        <CategoryQuickEditModal transaction={categoryEditTx} onClose={() => setCategoryEditTx(null)} />
+      )}
 
       {/* Mobile */}
       <div className="lg:hidden flex flex-col h-screen">
@@ -214,7 +325,12 @@ export function TransactionsPage() {
               onSelectCard={setSelectedCardPreview}
             />
           ) : (
-            <TransactionGroups groups={filteredGroups} showEodBalance={showEodBalance} />
+            <TransactionGroups
+              groups={filteredGroups}
+              showEodBalance={showEodBalance}
+              onEditCategory={setCategoryEditTx}
+              onEditTransaction={openEditTransaction}
+            />
           )}
         </div>
 
@@ -230,7 +346,7 @@ export function TransactionsPage() {
         </div>
 
         <button
-          onClick={comingSoon}
+          onClick={openCreateTransaction}
           className="fixed bottom-32 right-5 w-14 h-14 rounded-full bg-brand flex items-center justify-center shadow-lg"
         >
           <Plus size={24} />
@@ -280,7 +396,7 @@ export function TransactionsPage() {
               <Toggle checked={showEodBalance} onChange={setShowEodBalance} />
             </div>
             <button
-              onClick={comingSoon}
+              onClick={openCreateTransaction}
               className="flex items-center gap-2 h-10 px-4 rounded-[10px] bg-brand text-sm font-semibold"
             >
               <Plus size={16} /> Nova Transação
@@ -303,7 +419,12 @@ export function TransactionsPage() {
                 />
               </div>
             ) : (
-              <TransactionTable groups={filteredGroups} showEodBalance={showEodBalance} />
+              <TransactionTable
+                groups={filteredGroups}
+                showEodBalance={showEodBalance}
+                onEditCategory={setCategoryEditTx}
+                onEditTransaction={openEditTransaction}
+              />
             )}
           </Card>
 
@@ -337,7 +458,17 @@ function CenteredMessage({ text }: { text: string }) {
   return <div className="flex items-center justify-center min-h-[60vh] text-sm text-muted">{text}</div>
 }
 
-function TransactionGroups({ groups, showEodBalance }: { groups: DayGroup[]; showEodBalance: boolean }) {
+function TransactionGroups({
+  groups,
+  showEodBalance,
+  onEditCategory,
+  onEditTransaction,
+}: {
+  groups: DayGroup[]
+  showEodBalance: boolean
+  onEditCategory: (tx: TransactionContract) => void
+  onEditTransaction: (tx: TransactionContract) => void
+}) {
   if (groups.length === 0) {
     return <p className="text-sm text-muted text-center pt-8">Nenhuma transação encontrada.</p>
   }
@@ -349,7 +480,12 @@ function TransactionGroups({ groups, showEodBalance }: { groups: DayGroup[]; sho
             {formatDayHeader(group.dateKey)}
           </span>
           {group.transactions.map((tx) => (
-            <TransactionRow key={tx.id} transaction={tx} />
+            <TransactionRow
+              key={tx.id}
+              transaction={tx}
+              onEditCategory={onEditCategory}
+              onEditTransaction={onEditTransaction}
+            />
           ))}
           {showEodBalance && (
             <div className="flex items-center justify-between px-3 py-2 rounded-lg bg-brand/5 border border-brand/25">
@@ -369,16 +505,42 @@ function TransactionGroups({ groups, showEodBalance }: { groups: DayGroup[]; sho
   )
 }
 
-function TransactionRow({ transaction }: { transaction: TransactionContract }) {
+function TransactionRow({
+  transaction,
+  onEditCategory,
+  onEditTransaction,
+}: {
+  transaction: TransactionContract
+  onEditCategory?: (tx: TransactionContract) => void
+  onEditTransaction?: (tx: TransactionContract) => void
+}) {
   const Icon = resolveCategoryIcon(transaction.icon)
   const value = transaction.value
   const color = transaction.color || '#8B8FA8'
+  // Preview/synthetic rows aren't backed by a real transactions row, so neither affordance applies.
+  const editable = !transaction.previewSource
 
   return (
-    <div className="flex items-center gap-3 h-[68px] px-3 rounded-xl bg-card">
-      <IconCircle background={`${color}20`} size={40}>
-        <Icon size={18} style={{ color }} />
-      </IconCircle>
+    <div
+      onClick={editable && onEditTransaction ? () => onEditTransaction(transaction) : undefined}
+      className={`flex items-center gap-3 h-[68px] px-3 rounded-xl bg-card ${
+        editable && onEditTransaction ? 'cursor-pointer' : ''
+      }`}
+    >
+      <button
+        type="button"
+        disabled={!editable || !onEditCategory}
+        onClick={(e) => {
+          e.stopPropagation()
+          if (editable) onEditCategory?.(transaction)
+        }}
+        aria-label="Trocar categoria"
+        className="shrink-0 disabled:cursor-default"
+      >
+        <IconCircle background={`${color}20`} size={40}>
+          <Icon size={18} style={{ color }} />
+        </IconCircle>
+      </button>
       <div className="flex-1 min-w-0 flex flex-col gap-0.5">
         <span className="flex items-center gap-1.5 min-w-0">
           <span className="text-sm font-semibold truncate">{transaction.description}</span>
@@ -402,7 +564,17 @@ function TransactionRow({ transaction }: { transaction: TransactionContract }) {
   )
 }
 
-function TransactionTable({ groups, showEodBalance }: { groups: DayGroup[]; showEodBalance: boolean }) {
+function TransactionTable({
+  groups,
+  showEodBalance,
+  onEditCategory,
+  onEditTransaction,
+}: {
+  groups: DayGroup[]
+  showEodBalance: boolean
+  onEditCategory: (tx: TransactionContract) => void
+  onEditTransaction: (tx: TransactionContract) => void
+}) {
   if (groups.length === 0) {
     return <p className="text-sm text-muted text-center py-8">Nenhuma transação encontrada.</p>
   }
@@ -420,7 +592,12 @@ function TransactionTable({ groups, showEodBalance }: { groups: DayGroup[]; show
             {formatDayHeader(group.dateKey)}
           </div>
           {group.transactions.map((tx) => (
-            <TransactionTableRow key={tx.id} transaction={tx} />
+            <TransactionTableRow
+              key={tx.id}
+              transaction={tx}
+              onEditCategory={onEditCategory}
+              onEditTransaction={onEditTransaction}
+            />
           ))}
           {showEodBalance && (
             <div className="flex items-center justify-between h-9 px-4 bg-brand/5 border-y border-brand/25">
@@ -440,17 +617,42 @@ function TransactionTable({ groups, showEodBalance }: { groups: DayGroup[]; show
   )
 }
 
-function TransactionTableRow({ transaction }: { transaction: TransactionContract }) {
+function TransactionTableRow({
+  transaction,
+  onEditCategory,
+  onEditTransaction,
+}: {
+  transaction: TransactionContract
+  onEditCategory?: (tx: TransactionContract) => void
+  onEditTransaction?: (tx: TransactionContract) => void
+}) {
   const Icon = resolveCategoryIcon(transaction.icon)
   const value = transaction.value
   const color = transaction.color || '#8B8FA8'
+  const editable = !transaction.previewSource
 
   return (
-    <div className="flex items-center h-14 px-4 border-b border-border">
+    <div
+      onClick={editable && onEditTransaction ? () => onEditTransaction(transaction) : undefined}
+      className={`flex items-center h-14 px-4 border-b border-border ${
+        editable && onEditTransaction ? 'cursor-pointer' : ''
+      }`}
+    >
       <div className="flex-1 flex items-center gap-3 min-w-0">
-        <IconCircle background={`${color}20`} size={32}>
-          <Icon size={15} style={{ color }} />
-        </IconCircle>
+        <button
+          type="button"
+          disabled={!editable || !onEditCategory}
+          onClick={(e) => {
+            e.stopPropagation()
+            if (editable) onEditCategory?.(transaction)
+          }}
+          aria-label="Trocar categoria"
+          className="shrink-0 disabled:cursor-default"
+        >
+          <IconCircle background={`${color}20`} size={32}>
+            <Icon size={15} style={{ color }} />
+          </IconCircle>
+        </button>
         <div className="flex flex-col min-w-0">
           <span className="flex items-center gap-1.5 min-w-0">
             <span className="text-sm font-semibold truncate">{transaction.description}</span>
@@ -1075,11 +1277,299 @@ function FixedTransactionFormModal({
   )
 }
 
-function flattenCategories(categories: CategoryResponse[]): { id: string; name: string }[] {
-  const result: { id: string; name: string }[] = []
+function flattenCategories(
+  categories: CategoryResponse[],
+): { id: string; name: string; icon: string; color: string }[] {
+  const result: { id: string; name: string; icon: string; color: string }[] = []
   for (const c of categories) {
-    result.push({ id: c.id, name: c.name })
-    for (const child of c.children) result.push({ id: child.id, name: `${c.name} / ${child.name}` })
+    result.push({ id: c.id, name: c.name, icon: c.icon, color: c.color })
+    for (const child of c.children)
+      result.push({ id: child.id, name: `${c.name} / ${child.name}`, icon: child.icon, color: child.color })
   }
   return result
+}
+
+const EMPTY_TX_FORM: TransactionInput = {
+  description: '',
+  value: 0,
+  accountId: '',
+  categoryId: null,
+  dueDate: '',
+  paidOut: false,
+}
+
+function TransactionFormModal({
+  initial,
+  title,
+  isEditing,
+  pending,
+  accounts,
+  categories,
+  onCancel,
+  onSubmit,
+  onDelete,
+}: {
+  initial: TransactionInput
+  title: string
+  isEditing: boolean
+  pending: boolean
+  accounts: { id: string; name: string }[]
+  categories: { id: string; name: string }[]
+  onCancel: () => void
+  onSubmit: (input: TransactionInput) => void
+  onDelete?: () => void
+}) {
+  const [description, setDescription] = useState(initial.description)
+  const [value, setValue] = useState(String(initial.value))
+  const [accountId, setAccountId] = useState(initial.accountId)
+  const [categoryId, setCategoryId] = useState(initial.categoryId ?? '')
+  const [dueDate, setDueDate] = useState(initial.dueDate)
+  const [paidOut, setPaidOut] = useState(initial.paidOut)
+
+  const valid = description.trim().length > 0 && accountId.length > 0 && dueDate.length > 0
+
+  function handleSubmit(e: React.FormEvent) {
+    e.preventDefault()
+    if (!valid) return
+    onSubmit({
+      description: description.trim(),
+      value: Number(value.replace(',', '.')) || 0,
+      accountId,
+      categoryId: categoryId || null,
+      dueDate,
+      paidOut,
+    })
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+      <form
+        onSubmit={handleSubmit}
+        className="w-full max-w-sm max-h-[85vh] overflow-y-auto rounded-2xl bg-card p-5 flex flex-col gap-4"
+      >
+        <h2 className="text-base font-bold">{title}</h2>
+
+        <label className="flex flex-col gap-1.5">
+          <span className="text-xs text-muted">Descrição</span>
+          <input
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            autoFocus
+            className="h-10 px-3 rounded-lg bg-surface border border-border text-sm outline-none"
+          />
+        </label>
+
+        <label className="flex flex-col gap-1.5">
+          <span className="text-xs text-muted">Valor (negativo para despesa)</span>
+          <input
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+            inputMode="decimal"
+            className="h-10 px-3 rounded-lg bg-surface border border-border text-sm outline-none"
+          />
+        </label>
+
+        <label className="flex flex-col gap-1.5">
+          <span className="text-xs text-muted">Data</span>
+          <input
+            type="date"
+            value={dueDate}
+            onChange={(e) => setDueDate(e.target.value)}
+            className="h-10 px-3 rounded-lg bg-surface border border-border text-sm outline-none"
+          />
+        </label>
+
+        <label className="flex flex-col gap-1.5">
+          <span className="text-xs text-muted">Conta</span>
+          <select
+            value={accountId}
+            onChange={(e) => setAccountId(e.target.value)}
+            className="h-10 px-3 rounded-lg bg-surface border border-border text-sm outline-none"
+          >
+            <option value="" disabled>
+              Selecione
+            </option>
+            {accounts.map((a) => (
+              <option key={a.id} value={a.id}>
+                {a.name}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <label className="flex flex-col gap-1.5">
+          <span className="text-xs text-muted">Categoria</span>
+          <select
+            value={categoryId}
+            onChange={(e) => setCategoryId(e.target.value)}
+            className="h-10 px-3 rounded-lg bg-surface border border-border text-sm outline-none"
+          >
+            <option value="">Sem categoria</option>
+            {categories.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.name}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <label className="flex items-center justify-between">
+          <span className="text-xs text-muted">Pago</span>
+          <Toggle checked={paidOut} onChange={setPaidOut} />
+        </label>
+
+        <div className="flex items-center justify-between gap-2.5">
+          {isEditing && onDelete ? (
+            <button
+              type="button"
+              onClick={onDelete}
+              disabled={pending}
+              className="h-9 px-3 rounded-lg text-sm font-semibold text-negative disabled:opacity-60"
+            >
+              Remover
+            </button>
+          ) : (
+            <span />
+          )}
+          <div className="flex items-center gap-2.5">
+            <button
+              type="button"
+              onClick={onCancel}
+              disabled={pending}
+              className="h-9 px-4 rounded-lg text-sm font-semibold text-muted disabled:opacity-60"
+            >
+              Cancelar
+            </button>
+            <button
+              type="submit"
+              disabled={pending || !valid}
+              className="h-9 px-4 rounded-lg text-sm font-semibold bg-brand disabled:opacity-60"
+            >
+              {pending ? 'Salvando...' : 'Salvar'}
+            </button>
+          </div>
+        </div>
+      </form>
+    </div>
+  )
+}
+
+function ConfirmDeleteTransactionModal({
+  transaction,
+  pending,
+  onCancel,
+  onConfirm,
+}: {
+  transaction: TransactionContract
+  pending: boolean
+  onCancel: () => void
+  onConfirm: () => void
+}) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+      <div className="w-full max-w-sm rounded-2xl bg-card p-5 flex flex-col gap-4">
+        <div className="flex flex-col gap-1.5">
+          <h2 className="text-base font-bold">Remover transação</h2>
+          <p className="text-sm text-muted">
+            Isso vai remover <span className="font-semibold text-white">{transaction.description}</span>{' '}
+            definitivamente.
+          </p>
+        </div>
+        <div className="flex items-center justify-end gap-2.5">
+          <button
+            onClick={onCancel}
+            disabled={pending}
+            className="h-9 px-4 rounded-lg text-sm font-semibold text-muted disabled:opacity-60"
+          >
+            Cancelar
+          </button>
+          <button
+            onClick={onConfirm}
+            disabled={pending}
+            className="h-9 px-4 rounded-lg text-sm font-semibold bg-negative disabled:opacity-60"
+          >
+            {pending ? 'Removendo...' : 'Remover'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// Lighter than the full edit form — a tap-to-select list of categories opened straight from the
+// row icon, for the common case of just fixing a wrong/missing category.
+function CategoryQuickEditModal({
+  transaction,
+  onClose,
+}: {
+  transaction: TransactionContract
+  onClose: () => void
+}) {
+  const { data: categories } = useCategories()
+  const updateCategory = useUpdateTransactionCategory()
+  const flatCategories = categories ? flattenCategories(categories) : []
+  const NoCategoryIcon = resolveCategoryIcon(null)
+
+  function handleSelect(categoryId: string | null) {
+    updateCategory.mutate(
+      { id: transaction.id, categoryId },
+      {
+        onSuccess: () => {
+          useToastStore.getState().show('Categoria atualizada.')
+          onClose()
+        },
+        onError: (error) =>
+          useToastStore.getState().show(error instanceof Error ? error.message : 'Falha ao trocar categoria.'),
+      },
+    )
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+      <div className="w-full max-w-sm max-h-[80vh] rounded-2xl bg-card p-5 flex flex-col gap-3">
+        <div className="flex items-center justify-between">
+          <h2 className="text-base font-bold">Trocar categoria</h2>
+          <button onClick={onClose} className="text-sm text-muted">
+            Fechar
+          </button>
+        </div>
+        <p className="text-xs text-muted -mt-1 truncate">{transaction.description}</p>
+
+        <div className="flex-1 overflow-y-auto flex flex-col gap-1">
+          <button
+            onClick={() => handleSelect(null)}
+            disabled={updateCategory.isPending}
+            className={`flex items-center gap-3 h-12 px-3 rounded-xl text-left disabled:opacity-60 ${
+              !transaction.categoryId ? 'bg-brand/10 border border-brand/40' : 'bg-surface'
+            }`}
+          >
+            <IconCircle background="#8B8FA820" size={32}>
+              <NoCategoryIcon size={15} className="text-muted" />
+            </IconCircle>
+            <span className="text-sm font-medium">Sem categoria</span>
+          </button>
+          {flatCategories.map((c) => {
+            const CatIcon = resolveCategoryIcon(c.icon)
+            const active = c.id === transaction.categoryId
+            const color = c.color || '#8B8FA8'
+            return (
+              <button
+                key={c.id}
+                onClick={() => handleSelect(c.id)}
+                disabled={updateCategory.isPending}
+                className={`flex items-center gap-3 h-12 px-3 rounded-xl text-left disabled:opacity-60 ${
+                  active ? 'bg-brand/10 border border-brand/40' : 'bg-surface'
+                }`}
+              >
+                <IconCircle background={`${color}20`} size={32}>
+                  <CatIcon size={15} style={{ color }} />
+                </IconCircle>
+                <span className="text-sm font-medium truncate">{c.name}</span>
+              </button>
+            )
+          })}
+        </div>
+      </div>
+    </div>
+  )
 }
