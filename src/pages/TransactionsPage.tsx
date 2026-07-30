@@ -9,6 +9,7 @@ import {
   Pencil,
   Trash2,
   CreditCard,
+  Check,
 } from 'lucide-react'
 import {
   useTransactions,
@@ -28,19 +29,20 @@ import {
 } from '../hooks/useFixedTransactions'
 import { useAccounts } from '../hooks/useAccounts'
 import { useCategories } from '../hooks/useCategories'
-import { comingSoon, useToastStore } from '../store/toastStore'
+import { useToastStore } from '../store/toastStore'
 import { Card } from '../components/ui/Card'
 import { IconCircle } from '../components/ui/IconCircle'
 import { Toggle } from '../components/ui/Toggle'
 import { formatCurrency, formatSignedCurrency } from '../utils/currency'
 import { formatDayHeader, formatFullDate, formatMonthYear } from '../utils/date'
-import { computeMonthSummary, computeDayGroups, type DayGroup } from '../utils/monthSummary'
+import { computeMonthSummary, computeDayGroups } from '../utils/monthSummary'
 import { resolveCategoryIcon } from '../utils/categoryIcon'
+import { colorFromString } from '../utils/colorFromString'
 import { groupPreviewTransactions, previewSourceLabel } from '../utils/previewGroups'
 import type { FixedTransactionInput } from '../api/fixedTransactions'
 import type { TransactionInput } from '../api/transactions'
 import { TypeAccount } from '../api/types'
-import type { CategoryResponse, FixedTransactionResponse, TransactionContract } from '../api/types'
+import type { AccountResponse, CategoryResponse, FixedTransactionResponse, TransactionContract } from '../api/types'
 import type { CardPreviewGroup } from '../services/accountService'
 
 // One merged day in the account's day-by-day preview: real DayGroup transactions plus any card
@@ -65,16 +67,29 @@ export function TransactionsPage() {
   const [editingTx, setEditingTx] = useState<TransactionContract | null>(null)
   const [categoryEditTx, setCategoryEditTx] = useState<TransactionContract | null>(null)
   const [pendingDeleteTx, setPendingDeleteTx] = useState<TransactionContract | null>(null)
+  const [editingFixedPreview, setEditingFixedPreview] = useState<FixedTransactionResponse | null>(null)
+  // The specific occurrence's due date (naive timestamp) for the preview row that was clicked —
+  // needed for "somente este mês" (see handleSplitOffFixedPreview), since fixed transactions have no
+  // per-month due date of their own, only a recurring startDate/endDate.
+  const [editingFixedPreviewDueDate, setEditingFixedPreviewDueDate] = useState<string | null>(null)
+  // null = no filter applied (every bank account); a non-null array is the explicit subset to show.
+  const [selectedAccountIds, setSelectedAccountIds] = useState<string[] | null>(null)
+  const [accountFilterOpen, setAccountFilterOpen] = useState(false)
 
-  const { data: txData, isLoading, isError } = useTransactions(month, year)
-  const { data: cashFlow } = useHomeCashFlow()
   const { data: accounts } = useAccounts()
+  const bankAccounts = useMemo(() => (accounts ?? []).filter((a) => a.typeAccount === TypeAccount.Account), [accounts])
+  const accountFilterIds = selectedAccountIds ?? undefined
+  const isAccountFilterActive = selectedAccountIds !== null && selectedAccountIds.length < bankAccounts.length
+
+  const { data: txData, isLoading, isError } = useTransactions(month, year, accountFilterIds)
+  const { data: cashFlow } = useHomeCashFlow(accountFilterIds)
   const { data: categories } = useCategories()
   const createTx = useCreateTransaction()
   const updateTx = useUpdateTransaction()
   const deleteTx = useDeleteTransaction()
+  const { data: fixedTransactions } = useFixedTransactions()
+  const updateFixedPreview = useUpdateFixedTransaction()
 
-  const bankAccounts = useMemo(() => (accounts ?? []).filter((a) => a.typeAccount === TypeAccount.Account), [accounts])
   const flatCategories = useMemo(() => (categories ? flattenCategories(categories) : []), [categories])
 
   function openCreateTransaction() {
@@ -112,6 +127,89 @@ export function TransactionsPage() {
     }
   }
 
+  function openEditFixedPreview(tx: TransactionContract) {
+    const match = fixedTransactions?.find((f) => f.id === tx.id)
+    if (match) {
+      setEditingFixedPreview(match)
+      setEditingFixedPreviewDueDate(tx.dueDate)
+    }
+  }
+
+  function closeEditFixedPreview() {
+    setEditingFixedPreview(null)
+    setEditingFixedPreviewDueDate(null)
+  }
+
+  function handleFixedPreviewSubmit(input: FixedTransactionInput) {
+    if (!editingFixedPreview) return
+    updateFixedPreview.mutate(
+      { id: editingFixedPreview.id, input },
+      {
+        onSuccess: () => {
+          useToastStore.getState().show('Fixo atualizado.')
+          closeEditFixedPreview()
+        },
+        onError: (error) =>
+          useToastStore.getState().show(error instanceof Error ? error.message : 'Falha ao salvar fixo.'),
+      },
+    )
+  }
+
+  // "Somente este mês": the viewed occurrence becomes a real one-off transaction (using whatever
+  // description/value/account/category the user has in the form) and the fixed transaction's
+  // recurrence is pushed to start the following month, so it stops generating a preview row for the
+  // month being viewed while remaining unchanged for every other month.
+  function handleSplitOffFixedPreview(input: FixedTransactionInput) {
+    if (!editingFixedPreview || !editingFixedPreviewDueDate) return
+    createTx.mutate(
+      {
+        description: input.description,
+        value: input.value,
+        accountId: input.accountId,
+        categoryId: input.categoryId,
+        // TransactionInput.dueDate is a plain YYYY-MM-DD (createTransaction appends T00:00:00 itself),
+        // while editingFixedPreviewDueDate is already a full naive timestamp from the preview row.
+        dueDate: editingFixedPreviewDueDate.slice(0, 10),
+        paidOut: false,
+      },
+      {
+        onSuccess: () => {
+          updateFixedPreview.mutate(
+            {
+              id: editingFixedPreview.id,
+              input: {
+                description: editingFixedPreview.description,
+                value: editingFixedPreview.value,
+                accountId: editingFixedPreview.accountId,
+                categoryId: editingFixedPreview.categoryId,
+                startDate: nextMonthStartNaive(year, month),
+                endDate: editingFixedPreview.endDate,
+              },
+            },
+            {
+              onSuccess: () => {
+                useToastStore.getState().show('Lançamento desmembrado deste mês.')
+                closeEditFixedPreview()
+              },
+              onError: (error) =>
+                useToastStore.getState().show(error instanceof Error ? error.message : 'Falha ao desmembrar fixo.'),
+            },
+          )
+        },
+        onError: (error) =>
+          useToastStore.getState().show(error instanceof Error ? error.message : 'Falha ao criar transação do mês.'),
+      },
+    )
+  }
+
+  function toggleAccountFilter(accountId: string) {
+    setSelectedAccountIds((prev) => {
+      const current = prev ?? bankAccounts.map((a) => a.id)
+      const next = current.includes(accountId) ? current.filter((id) => id !== accountId) : [...current, accountId]
+      return next.length === bankAccounts.length ? null : next
+    })
+  }
+
   function handleDeleteTx() {
     if (!pendingDeleteTx) return
     deleteTx.mutate(pendingDeleteTx.id, {
@@ -127,21 +225,28 @@ export function TransactionsPage() {
   }
 
   const monthSummary = useMemo(() => (txData ? computeMonthSummary(txData) : null), [txData])
-  const isEmptyMonth = !!txData && txData.transactions.length === 0
 
-  const { data: preview, isLoading: isPreviewLoading } = useAccountPreview(year, month, { enabled: isEmptyMonth })
-  // Preview items get spread across plausible days of the target month (see accountService.ts),
-  // so the account preview renders as a day-by-day forecast (`reverse: false`: day 1 first, since
-  // this looks forward, not back).
+  // Always fetched, in parallel with real transactions — getAccountPreview already nets out
+  // real this-month entries from each category's average (see accountService.ts), so combining
+  // the two lists below never double-counts.
+  const { data: preview, isLoading: isPreviewLoading } = useAccountPreview(year, month, {
+    accountIds: accountFilterIds,
+  })
+  // Real + preview transactions merged into one day-by-day forecast (`reverse: false`: day 1
+  // first, since this looks forward through the month rather than back).
+  const combinedTransactions = useMemo(
+    () => [...(txData?.transactions ?? []), ...(preview?.transactions ?? [])],
+    [txData, preview],
+  )
   const accountPreviewDayGroups = useMemo(
-    () => computeDayGroups(preview?.transactions ?? [], monthSummary?.startingBalance ?? 0, { reverse: false }),
-    [preview, monthSummary],
+    () => computeDayGroups(combinedTransactions, monthSummary?.startingBalance ?? 0, { reverse: false }),
+    [combinedTransactions, monthSummary],
   )
 
   // Independent of the account preview above: each card decides on its own (server-side) whether
   // it has real invoice data for this month, regardless of whether the bank account does.
   const { data: cardsPreview } = useCardsPreview(year, month)
-  const hasAnyPreviewData = (preview?.transactions.length ?? 0) > 0 || (cardsPreview?.length ?? 0) > 0
+  const hasAnyPreviewData = accountPreviewDayGroups.length > 0 || (cardsPreview?.length ?? 0) > 0
 
   // Merges each card into the single day matching its own invoice due date (accounts.dueDate),
   // as one collapsed row rather than its full category breakdown — that breakdown is only shown
@@ -161,27 +266,23 @@ export function TransactionsPage() {
     let runningBalance = monthSummary?.startingBalance ?? 0
     return sortedKeys.map((dateKey) => {
       const accountGroup = accountByDate.get(dateKey)
-      if (accountGroup) runningBalance = accountGroup.endOfDayBalance
+      // Add this day's own total rather than jumping to accountGroup.endOfDayBalance — that value
+      // is a self-contained running sum over account transactions alone, so assigning it outright
+      // would erase any card contribution folded into runningBalance on a previous day.
+      if (accountGroup) runningBalance += accountGroup.dayTotal
+      const cardsForDay = cardsByDate.get(dateKey) ?? []
+      // card.value is already signed (negative = expense), same convention as tx.value elsewhere —
+      // must be applied to the running balance, not just displayed, so the card estimate actually
+      // discounts the day's projected end-of-day balance.
+      runningBalance += cardsForDay.reduce((sum, c) => sum + c.value, 0)
       return {
         dateKey,
         transactions: accountGroup?.transactions ?? [],
-        cards: cardsByDate.get(dateKey) ?? [],
+        cards: cardsForDay,
         endOfDayBalance: runningBalance,
       }
     })
   }, [accountPreviewDayGroups, cardsPreview, monthSummary])
-
-  const filteredGroups = useMemo(() => {
-    if (!monthSummary) return []
-    const q = query.trim().toLowerCase()
-    if (!q) return monthSummary.dayGroups
-    return monthSummary.dayGroups
-      .map((group) => ({
-        ...group,
-        transactions: group.transactions.filter((tx) => tx.description.toLowerCase().includes(q)),
-      }))
-      .filter((group) => group.transactions.length > 0)
-  }, [monthSummary, query])
 
   const filteredPreviewDayGroups = useMemo(() => {
     const q = query.trim().toLowerCase()
@@ -196,7 +297,9 @@ export function TransactionsPage() {
   }, [previewDayGroups, query])
 
   const displayedProjectedBalance =
-    (monthSummary?.projectedEndBalance ?? 0) + (isEmptyMonth ? (preview?.value ?? 0) : 0)
+    previewDayGroups.length > 0
+      ? previewDayGroups[previewDayGroups.length - 1].endOfDayBalance
+      : (monthSummary?.startingBalance ?? 0)
 
   function goToPreviousMonth() {
     if (month === 1) {
@@ -267,6 +370,35 @@ export function TransactionsPage() {
       {categoryEditTx && (
         <CategoryQuickEditModal transaction={categoryEditTx} onClose={() => setCategoryEditTx(null)} />
       )}
+      {editingFixedPreview && (
+        <FixedTransactionFormModal
+          initial={{
+            description: editingFixedPreview.description,
+            value: editingFixedPreview.value,
+            accountId: editingFixedPreview.accountId,
+            categoryId: editingFixedPreview.categoryId,
+            startDate: editingFixedPreview.startDate.slice(0, 10),
+            endDate: editingFixedPreview.endDate ? editingFixedPreview.endDate.slice(0, 10) : null,
+          }}
+          title="Editar fixo"
+          pending={updateFixedPreview.isPending || createTx.isPending}
+          accounts={bankAccounts}
+          categories={flatCategories}
+          onCancel={closeEditFixedPreview}
+          onSubmit={handleFixedPreviewSubmit}
+          onSplitOff={handleSplitOffFixedPreview}
+          splitMonthLabel={formatMonthYear(month, year)}
+        />
+      )}
+      {accountFilterOpen && (
+        <AccountFilterModal
+          accounts={bankAccounts}
+          selectedAccountIds={selectedAccountIds}
+          onToggle={toggleAccountFilter}
+          onSelectAll={() => setSelectedAccountIds(null)}
+          onClose={() => setAccountFilterOpen(false)}
+        />
+      )}
 
       {/* Mobile */}
       <div className="lg:hidden flex flex-col h-screen">
@@ -300,8 +432,12 @@ export function TransactionsPage() {
               <Repeat size={18} />
             </button>
             <button
-              onClick={comingSoon}
-              className="w-11 h-11 shrink-0 flex items-center justify-center rounded-xl bg-card"
+              onClick={() => setAccountFilterOpen(true)}
+              aria-label="Filtrar contas"
+              title="Filtrar contas"
+              className={`w-11 h-11 shrink-0 flex items-center justify-center rounded-xl border ${
+                isAccountFilterActive ? 'bg-brand/20 border-brand text-brand' : 'bg-card border-transparent'
+              }`}
             >
               <SlidersHorizontal size={18} />
             </button>
@@ -314,24 +450,18 @@ export function TransactionsPage() {
         </div>
 
         <div className="flex-1 overflow-y-auto px-4 pb-32">
-          {isEmptyMonth ? (
-            <AccountPreviewSection
-              dayGroups={filteredPreviewDayGroups}
-              value={preview?.value}
-              loading={isPreviewLoading}
-              hasAnyPreviewData={hasAnyPreviewData}
-              showEodBalance={showEodBalance}
-              variant="list"
-              onSelectCard={setSelectedCardPreview}
-            />
-          ) : (
-            <TransactionGroups
-              groups={filteredGroups}
-              showEodBalance={showEodBalance}
-              onEditCategory={setCategoryEditTx}
-              onEditTransaction={openEditTransaction}
-            />
-          )}
+          <AccountPreviewSection
+            dayGroups={filteredPreviewDayGroups}
+            value={preview?.value}
+            loading={isPreviewLoading}
+            hasAnyPreviewData={hasAnyPreviewData}
+            showEodBalance={showEodBalance}
+            variant="list"
+            onSelectCard={setSelectedCardPreview}
+            onEditCategory={setCategoryEditTx}
+            onEditTransaction={openEditTransaction}
+            onEditFixedPreview={openEditFixedPreview}
+          />
         </div>
 
         <div className="fixed bottom-24 left-0 right-0 flex items-center justify-between px-5 h-[72px] bg-surface border-t border-border">
@@ -380,12 +510,6 @@ export function TransactionsPage() {
               />
             </div>
             <button
-              onClick={comingSoon}
-              className="w-10 h-10 flex items-center justify-center rounded-[10px] bg-card border border-border"
-            >
-              <SlidersHorizontal size={16} />
-            </button>
-            <button
               onClick={() => setFixedModalOpen(true)}
               className="flex items-center gap-2 h-10 px-4 rounded-[10px] bg-card border border-border text-sm font-semibold"
             >
@@ -406,26 +530,20 @@ export function TransactionsPage() {
 
         <div className="flex-1 flex gap-5 min-h-0">
           <Card className="flex-1 overflow-y-auto">
-            {isEmptyMonth ? (
-              <div className="flex flex-col gap-2 px-4 py-3">
-                <AccountPreviewSection
-                  dayGroups={filteredPreviewDayGroups}
-                  value={preview?.value}
-                  loading={isPreviewLoading}
-                  hasAnyPreviewData={hasAnyPreviewData}
-                  showEodBalance={showEodBalance}
-                  variant="table"
-                  onSelectCard={setSelectedCardPreview}
-                />
-              </div>
-            ) : (
-              <TransactionTable
-                groups={filteredGroups}
+            <div className="flex flex-col gap-2 px-4 py-3">
+              <AccountPreviewSection
+                dayGroups={filteredPreviewDayGroups}
+                value={preview?.value}
+                loading={isPreviewLoading}
+                hasAnyPreviewData={hasAnyPreviewData}
                 showEodBalance={showEodBalance}
+                variant="table"
+                onSelectCard={setSelectedCardPreview}
                 onEditCategory={setCategoryEditTx}
                 onEditTransaction={openEditTransaction}
+                onEditFixedPreview={openEditFixedPreview}
               />
-            )}
+            </div>
           </Card>
 
           <div className="w-[280px] shrink-0 flex flex-col gap-3">
@@ -447,6 +565,18 @@ export function TransactionsPage() {
                 tone="positive"
               />
             </Card>
+            {bankAccounts.length > 0 && (
+              <Card className="p-5 flex flex-col gap-3 min-h-0">
+                <h2 className="text-sm font-semibold">Contas</h2>
+                <AccountFilterList
+                  accounts={bankAccounts}
+                  selectedAccountIds={selectedAccountIds}
+                  onToggle={toggleAccountFilter}
+                  onSelectAll={() => setSelectedAccountIds(null)}
+                  className="-mx-1.5 overflow-y-auto"
+                />
+              </Card>
+            )}
           </div>
         </div>
       </div>
@@ -458,74 +588,36 @@ function CenteredMessage({ text }: { text: string }) {
   return <div className="flex items-center justify-center min-h-[60vh] text-sm text-muted">{text}</div>
 }
 
-function TransactionGroups({
-  groups,
-  showEodBalance,
-  onEditCategory,
-  onEditTransaction,
-}: {
-  groups: DayGroup[]
-  showEodBalance: boolean
-  onEditCategory: (tx: TransactionContract) => void
-  onEditTransaction: (tx: TransactionContract) => void
-}) {
-  if (groups.length === 0) {
-    return <p className="text-sm text-muted text-center pt-8">Nenhuma transação encontrada.</p>
-  }
-  return (
-    <div className="flex flex-col gap-4">
-      {groups.map((group) => (
-        <div key={group.dateKey} className="flex flex-col gap-2">
-          <span className="text-[11px] font-semibold tracking-wide text-muted">
-            {formatDayHeader(group.dateKey)}
-          </span>
-          {group.transactions.map((tx) => (
-            <TransactionRow
-              key={tx.id}
-              transaction={tx}
-              onEditCategory={onEditCategory}
-              onEditTransaction={onEditTransaction}
-            />
-          ))}
-          {showEodBalance && (
-            <div className="flex items-center justify-between px-3 py-2 rounded-lg bg-brand/5 border border-brand/25">
-              <span className="text-xs text-brand-light">Saldo fim do dia</span>
-              <span
-                className={`text-xs font-semibold ${
-                  group.endOfDayBalance >= 0 ? 'text-positive' : 'text-negative'
-                }`}
-              >
-                {formatSignedCurrency(group.endOfDayBalance)}
-              </span>
-            </div>
-          )}
-        </div>
-      ))}
-    </div>
-  )
-}
-
 function TransactionRow({
   transaction,
   onEditCategory,
   onEditTransaction,
+  onEditFixedPreview,
 }: {
   transaction: TransactionContract
   onEditCategory?: (tx: TransactionContract) => void
   onEditTransaction?: (tx: TransactionContract) => void
+  onEditFixedPreview?: (tx: TransactionContract) => void
 }) {
   const Icon = resolveCategoryIcon(transaction.icon)
   const value = transaction.value
   const color = transaction.color || '#8B8FA8'
-  // Preview/synthetic rows aren't backed by a real transactions row, so neither affordance applies.
+  // Preview/synthetic rows aren't backed by a real transactions row, so neither affordance applies —
+  // except a 'Fixed' bank-account preview row, which is traceable back to a real fixedTransactions
+  // row (see getAccountPreview) and can be edited through onEditFixedPreview.
   const editable = !transaction.previewSource
+  const isFixedPreview = transaction.previewSource === 'Fixed' && !!onEditFixedPreview
+  const clickable = editable ? !!onEditTransaction : isFixedPreview
+
+  function handleClick() {
+    if (isFixedPreview) onEditFixedPreview?.(transaction)
+    else if (editable) onEditTransaction?.(transaction)
+  }
 
   return (
     <div
-      onClick={editable && onEditTransaction ? () => onEditTransaction(transaction) : undefined}
-      className={`flex items-center gap-3 h-[68px] px-3 rounded-xl bg-card ${
-        editable && onEditTransaction ? 'cursor-pointer' : ''
-      }`}
+      onClick={clickable ? handleClick : undefined}
+      className={`flex items-center gap-3 h-[68px] px-3 rounded-xl bg-card ${clickable ? 'cursor-pointer' : ''}`}
     >
       <button
         type="button"
@@ -564,79 +656,33 @@ function TransactionRow({
   )
 }
 
-function TransactionTable({
-  groups,
-  showEodBalance,
-  onEditCategory,
-  onEditTransaction,
-}: {
-  groups: DayGroup[]
-  showEodBalance: boolean
-  onEditCategory: (tx: TransactionContract) => void
-  onEditTransaction: (tx: TransactionContract) => void
-}) {
-  if (groups.length === 0) {
-    return <p className="text-sm text-muted text-center py-8">Nenhuma transação encontrada.</p>
-  }
-  return (
-    <div className="flex flex-col">
-      <div className="flex items-center h-11 px-4 bg-surface text-xs font-semibold text-muted">
-        <span className="flex-1">Transação</span>
-        <span className="w-32">Categoria</span>
-        <span className="w-32 text-right">Valor</span>
-        <span className="w-16 text-center">Status</span>
-      </div>
-      {groups.map((group) => (
-        <div key={group.dateKey}>
-          <div className="flex items-center h-9 px-4 bg-bg text-[11px] font-semibold text-muted tracking-wide">
-            {formatDayHeader(group.dateKey)}
-          </div>
-          {group.transactions.map((tx) => (
-            <TransactionTableRow
-              key={tx.id}
-              transaction={tx}
-              onEditCategory={onEditCategory}
-              onEditTransaction={onEditTransaction}
-            />
-          ))}
-          {showEodBalance && (
-            <div className="flex items-center justify-between h-9 px-4 bg-brand/5 border-y border-brand/25">
-              <span className="text-xs text-brand-light">Saldo fim do dia</span>
-              <span
-                className={`text-xs font-semibold ${
-                  group.endOfDayBalance >= 0 ? 'text-positive' : 'text-negative'
-                }`}
-              >
-                {formatSignedCurrency(group.endOfDayBalance)}
-              </span>
-            </div>
-          )}
-        </div>
-      ))}
-    </div>
-  )
-}
-
 function TransactionTableRow({
   transaction,
   onEditCategory,
   onEditTransaction,
+  onEditFixedPreview,
 }: {
   transaction: TransactionContract
   onEditCategory?: (tx: TransactionContract) => void
   onEditTransaction?: (tx: TransactionContract) => void
+  onEditFixedPreview?: (tx: TransactionContract) => void
 }) {
   const Icon = resolveCategoryIcon(transaction.icon)
   const value = transaction.value
   const color = transaction.color || '#8B8FA8'
   const editable = !transaction.previewSource
+  const isFixedPreview = transaction.previewSource === 'Fixed' && !!onEditFixedPreview
+  const clickable = editable ? !!onEditTransaction : isFixedPreview
+
+  function handleClick() {
+    if (isFixedPreview) onEditFixedPreview?.(transaction)
+    else if (editable) onEditTransaction?.(transaction)
+  }
 
   return (
     <div
-      onClick={editable && onEditTransaction ? () => onEditTransaction(transaction) : undefined}
-      className={`flex items-center h-14 px-4 border-b border-border ${
-        editable && onEditTransaction ? 'cursor-pointer' : ''
-      }`}
+      onClick={clickable ? handleClick : undefined}
+      className={`flex items-center h-14 px-4 border-b border-border ${clickable ? 'cursor-pointer' : ''}`}
     >
       <div className="flex-1 flex items-center gap-3 min-w-0">
         <button
@@ -713,7 +759,7 @@ function PreviewBadge({ source }: { source: TransactionContract['previewSource']
 function PreviewBanner({ value, loading }: { value: number | undefined; loading: boolean }) {
   return (
     <div className="flex items-center justify-between px-3 py-2.5 rounded-xl bg-card border border-dashed border-border text-xs">
-      <span className="text-muted">Estimativa — mês ainda sem transações</span>
+      <span className="text-muted">Estimativa para o restante do mês</span>
       {!loading && value !== undefined && (
         <span className="font-semibold">{formatSignedCurrency(value)}</span>
       )}
@@ -744,6 +790,9 @@ function AccountPreviewSection({
   showEodBalance,
   variant,
   onSelectCard,
+  onEditCategory,
+  onEditTransaction,
+  onEditFixedPreview,
 }: {
   dayGroups: PreviewDayGroup[]
   value: number | undefined
@@ -752,6 +801,9 @@ function AccountPreviewSection({
   showEodBalance: boolean
   variant: 'list' | 'table'
   onSelectCard: (card: CardPreviewGroup) => void
+  onEditCategory: (tx: TransactionContract) => void
+  onEditTransaction: (tx: TransactionContract) => void
+  onEditFixedPreview: (tx: TransactionContract) => void
 }) {
   return (
     <div className="flex flex-col gap-2">
@@ -761,9 +813,23 @@ function AccountPreviewSection({
       )}
       {hasAnyPreviewData &&
         (variant === 'list' ? (
-          <PreviewDayList groups={dayGroups} showEodBalance={showEodBalance} onSelectCard={onSelectCard} />
+          <PreviewDayList
+            groups={dayGroups}
+            showEodBalance={showEodBalance}
+            onSelectCard={onSelectCard}
+            onEditCategory={onEditCategory}
+            onEditTransaction={onEditTransaction}
+            onEditFixedPreview={onEditFixedPreview}
+          />
         ) : (
-          <PreviewDayTable groups={dayGroups} showEodBalance={showEodBalance} onSelectCard={onSelectCard} />
+          <PreviewDayTable
+            groups={dayGroups}
+            showEodBalance={showEodBalance}
+            onSelectCard={onSelectCard}
+            onEditCategory={onEditCategory}
+            onEditTransaction={onEditTransaction}
+            onEditFixedPreview={onEditFixedPreview}
+          />
         ))}
     </div>
   )
@@ -773,10 +839,16 @@ function PreviewDayList({
   groups,
   showEodBalance,
   onSelectCard,
+  onEditCategory,
+  onEditTransaction,
+  onEditFixedPreview,
 }: {
   groups: PreviewDayGroup[]
   showEodBalance: boolean
   onSelectCard: (card: CardPreviewGroup) => void
+  onEditCategory: (tx: TransactionContract) => void
+  onEditTransaction: (tx: TransactionContract) => void
+  onEditFixedPreview: (tx: TransactionContract) => void
 }) {
   if (groups.length === 0) {
     return <p className="text-sm text-muted text-center pt-8">Nenhuma transação encontrada.</p>
@@ -789,7 +861,13 @@ function PreviewDayList({
             {formatDayHeader(group.dateKey)}
           </span>
           {group.transactions.map((tx) => (
-            <TransactionRow key={tx.id} transaction={tx} />
+            <TransactionRow
+              key={tx.id}
+              transaction={tx}
+              onEditCategory={onEditCategory}
+              onEditTransaction={onEditTransaction}
+              onEditFixedPreview={onEditFixedPreview}
+            />
           ))}
           {group.cards.map((card) => (
             <CardAggregateRow key={card.cardId} card={card} onClick={() => onSelectCard(card)} />
@@ -816,10 +894,16 @@ function PreviewDayTable({
   groups,
   showEodBalance,
   onSelectCard,
+  onEditCategory,
+  onEditTransaction,
+  onEditFixedPreview,
 }: {
   groups: PreviewDayGroup[]
   showEodBalance: boolean
   onSelectCard: (card: CardPreviewGroup) => void
+  onEditCategory: (tx: TransactionContract) => void
+  onEditTransaction: (tx: TransactionContract) => void
+  onEditFixedPreview: (tx: TransactionContract) => void
 }) {
   if (groups.length === 0) {
     return <p className="text-sm text-muted text-center py-8">Nenhuma transação encontrada.</p>
@@ -838,7 +922,13 @@ function PreviewDayTable({
             {formatDayHeader(group.dateKey)}
           </div>
           {group.transactions.map((tx) => (
-            <TransactionTableRow key={tx.id} transaction={tx} />
+            <TransactionTableRow
+              key={tx.id}
+              transaction={tx}
+              onEditCategory={onEditCategory}
+              onEditTransaction={onEditTransaction}
+              onEditFixedPreview={onEditFixedPreview}
+            />
           ))}
           {group.cards.map((card) => (
             <CardAggregateTableRow key={card.cardId} card={card} onClick={() => onSelectCard(card)} />
@@ -950,6 +1040,119 @@ function CardPreviewModal({ card, onClose }: { card: CardPreviewGroup; onClose: 
   )
 }
 
+// Shared between the always-visible desktop sidebar panel and the mobile bottom sheet, so both
+// surfaces render account identity (avatar color, checkbox state) identically.
+function AccountFilterList({
+  accounts,
+  selectedAccountIds,
+  onToggle,
+  onSelectAll,
+  className = '',
+}: {
+  accounts: AccountResponse[]
+  selectedAccountIds: string[] | null
+  onToggle: (accountId: string) => void
+  onSelectAll: () => void
+  className?: string
+}) {
+  const isSelected = (id: string) => selectedAccountIds === null || selectedAccountIds.includes(id)
+  const allSelected = selectedAccountIds === null
+
+  return (
+    <div className={`flex flex-col ${className}`}>
+      {/* Not a checkbox row: selecting all is a derived state (every account checked), not an
+          independent option, so it reads as an action link rather than a togglable item. */}
+      {!allSelected && (
+        <button
+          onClick={onSelectAll}
+          className="self-end px-1.5 pb-1.5 text-xs font-semibold text-brand hover:underline"
+        >
+          Selecionar todas
+        </button>
+      )}
+      {accounts.map((account) => (
+        <AccountFilterRow
+          key={account.id}
+          label={account.name}
+          checked={isSelected(account.id)}
+          onClick={() => onToggle(account.id)}
+          avatarColor={colorFromString(account.id)}
+        />
+      ))}
+    </div>
+  )
+}
+
+function AccountFilterRow({
+  label,
+  checked,
+  onClick,
+  avatarColor,
+}: {
+  label: string
+  checked: boolean
+  onClick: () => void
+  avatarColor?: string
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className="flex items-center gap-2.5 px-1.5 py-2 rounded-xl text-sm hover:bg-bg transition-colors"
+    >
+      {avatarColor ? (
+        <IconCircle background={avatarColor} size={26}>
+          <span className="text-[11px] font-bold">{label.charAt(0).toUpperCase()}</span>
+        </IconCircle>
+      ) : (
+        <div className="w-[26px] h-[26px] shrink-0" />
+      )}
+      <span className={`flex-1 text-left ${checked ? 'font-semibold' : 'text-muted'}`}>{label}</span>
+      <span
+        className={`w-5 h-5 shrink-0 rounded-full border flex items-center justify-center ${
+          checked ? 'bg-brand border-brand' : 'border-border'
+        }`}
+      >
+        {checked && <Check size={13} className="text-white" strokeWidth={3} />}
+      </span>
+    </button>
+  )
+}
+
+function AccountFilterModal({
+  accounts,
+  selectedAccountIds,
+  onToggle,
+  onSelectAll,
+  onClose,
+}: {
+  accounts: AccountResponse[]
+  selectedAccountIds: string[] | null
+  onToggle: (accountId: string) => void
+  onSelectAll: () => void
+  onClose: () => void
+}) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60 p-4">
+      <div className="w-full max-w-sm rounded-2xl bg-card p-5 flex flex-col gap-3 max-h-[75vh]">
+        <div className="flex items-center justify-between">
+          <h2 className="text-base font-bold">Filtrar contas</h2>
+          <button onClick={onClose} className="text-sm text-muted">
+            Fechar
+          </button>
+        </div>
+
+        <AccountFilterList
+          accounts={accounts}
+          selectedAccountIds={selectedAccountIds}
+          onToggle={onToggle}
+          onSelectAll={onSelectAll}
+          className="-mx-1.5 overflow-y-auto"
+        />
+      </div>
+    </div>
+  )
+}
+
 const EMPTY_FIXED_FORM: FixedTransactionInput = {
   description: '',
   value: 0,
@@ -962,6 +1165,12 @@ const EMPTY_FIXED_FORM: FixedTransactionInput = {
 function todayDateInputValue(): string {
   const d = new Date()
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+function nextMonthStartNaive(year: number, month: number): string {
+  const nextYear = month === 12 ? year + 1 : year
+  const nextMonth = month === 12 ? 1 : month + 1
+  return `${nextYear}-${String(nextMonth).padStart(2, '0')}-01T00:00:00`
 }
 
 function FixedTransactionsModal({ onClose }: { onClose: () => void }) {
@@ -1148,6 +1357,8 @@ function FixedTransactionFormModal({
   categories,
   onCancel,
   onSubmit,
+  onSplitOff,
+  splitMonthLabel,
 }: {
   initial: FixedTransactionInput
   title: string
@@ -1156,6 +1367,10 @@ function FixedTransactionFormModal({
   categories: { id: string; name: string }[]
   onCancel: () => void
   onSubmit: (input: FixedTransactionInput) => void
+  // Only passed when editing an occurrence with a known month (i.e. opened from a preview row) —
+  // lets the user fork just that month into a real transaction instead of changing the recurring rule.
+  onSplitOff?: (input: FixedTransactionInput) => void
+  splitMonthLabel?: string
 }) {
   const [description, setDescription] = useState(initial.description)
   const [value, setValue] = useState(String(initial.value))
@@ -1163,20 +1378,23 @@ function FixedTransactionFormModal({
   const [categoryId, setCategoryId] = useState(initial.categoryId ?? '')
   const [startDate, setStartDate] = useState(initial.startDate)
   const [endDate, setEndDate] = useState(initial.endDate ?? '')
+  const [splitOnly, setSplitOnly] = useState(false)
 
   const valid = description.trim().length > 0 && accountId.length > 0 && startDate.length > 0
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     if (!valid) return
-    onSubmit({
+    const input: FixedTransactionInput = {
       description: description.trim(),
       value: Number(value.replace(',', '.')) || 0,
       accountId,
       categoryId: categoryId || null,
       startDate: `${startDate}T00:00:00`,
       endDate: endDate ? `${endDate}T00:00:00` : null,
-    })
+    }
+    if (splitOnly && onSplitOff) onSplitOff(input)
+    else onSubmit(input)
   }
 
   return (
@@ -1235,25 +1453,42 @@ function FixedTransactionFormModal({
           </select>
         </label>
 
-        <label className="flex flex-col gap-1.5">
-          <span className="text-xs text-muted">A partir de</span>
-          <input
-            type="date"
-            value={startDate}
-            onChange={(e) => setStartDate(e.target.value)}
-            className="h-10 px-3 rounded-lg bg-surface border border-border text-sm outline-none"
-          />
-        </label>
+        {onSplitOff && (
+          <label className="flex items-center justify-between gap-3 p-3 rounded-lg bg-surface border border-border">
+            <span className="flex flex-col gap-0.5 pr-2">
+              <span className="text-xs font-medium">Aplicar somente a {splitMonthLabel ?? 'este mês'}</span>
+              <span className="text-[11px] text-muted">
+                Cria uma transação avulsa para {splitMonthLabel ?? 'este mês'}; a fixa continua igual nos meses
+                seguintes.
+              </span>
+            </span>
+            <Toggle checked={splitOnly} onChange={setSplitOnly} />
+          </label>
+        )}
 
-        <label className="flex flex-col gap-1.5">
-          <span className="text-xs text-muted">Até (opcional — deixe vazio se não tem fim)</span>
-          <input
-            type="date"
-            value={endDate}
-            onChange={(e) => setEndDate(e.target.value)}
-            className="h-10 px-3 rounded-lg bg-surface border border-border text-sm outline-none"
-          />
-        </label>
+        {!splitOnly && (
+          <>
+            <label className="flex flex-col gap-1.5">
+              <span className="text-xs text-muted">A partir de</span>
+              <input
+                type="date"
+                value={startDate}
+                onChange={(e) => setStartDate(e.target.value)}
+                className="h-10 px-3 rounded-lg bg-surface border border-border text-sm outline-none"
+              />
+            </label>
+
+            <label className="flex flex-col gap-1.5">
+              <span className="text-xs text-muted">Até (opcional — deixe vazio se não tem fim)</span>
+              <input
+                type="date"
+                value={endDate}
+                onChange={(e) => setEndDate(e.target.value)}
+                className="h-10 px-3 rounded-lg bg-surface border border-border text-sm outline-none"
+              />
+            </label>
+          </>
+        )}
 
         <div className="flex items-center justify-end gap-2.5">
           <button

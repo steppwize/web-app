@@ -8,10 +8,10 @@ import {
   type TransactionInput,
 } from '../api/transactions'
 
-export function useTransactions(month: number, year: number) {
+export function useTransactions(month: number, year: number, accountIds?: string[]) {
   return useQuery({
-    queryKey: ['transactions', month, year],
-    queryFn: () => getTransactions(month, year),
+    queryKey: ['transactions', month, year, accountIds],
+    queryFn: () => getTransactions(month, year, accountIds),
   })
 }
 

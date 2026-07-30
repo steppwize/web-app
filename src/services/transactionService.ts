@@ -151,13 +151,19 @@ export async function deleteTransaction(id: string): Promise<{ message: string }
 // Fixed/recurring transactions (core-api's FixedTransaction LoopUntil expansion) are out of MVP
 // scope — this only covers concrete Transaction rows, matching what the Itaú import and current
 // screens actually produce.
-export async function getTransactions(month: number, year: number): Promise<TransactionResponse> {
+export async function getTransactions(
+  month: number,
+  year: number,
+  accountIds?: string[],
+): Promise<TransactionResponse> {
   const date = makeDate(year, month, 1)
 
   const accountRows = await db.select().from(accounts).where(eq(accounts.deleted, false))
   const accountById = new Map(accountRows.map((a) => [a.id, a]))
 
-  const accountTypeAccountIds = accountRows.filter((a) => a.typeAccount === TypeAccount.Account).map((a) => a.id)
+  const accountTypeAccountIds = accountRows
+    .filter((a) => a.typeAccount === TypeAccount.Account && (!accountIds || accountIds.includes(a.id)))
+    .map((a) => a.id)
 
   const pastTx =
     accountTypeAccountIds.length > 0
@@ -174,7 +180,7 @@ export async function getTransactions(month: number, year: number): Promise<Tran
       : []
 
   const previousMonthSummary: TransactionTotalByAccount[] = accountRows
-    .filter((a) => a.typeAccount === TypeAccount.Account)
+    .filter((a) => a.typeAccount === TypeAccount.Account && (!accountIds || accountIds.includes(a.id)))
     .map((account) => {
       const accountPast = pastTx.filter((t) => t.accountId === account.id)
       return {

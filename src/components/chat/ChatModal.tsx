@@ -476,6 +476,10 @@ function describeToolCall(toolName: string, input: unknown): string {
         return `Remover a transação "${req(data.description)}"`
       case 'applyRules':
         return data.invoiceId ? 'Aplicar regras de categorização a esta fatura' : 'Aplicar regras de categorização às transações sem categoria'
+      case 'updateFixedTransaction': {
+        const inner = (data.input ?? {}) as Record<string, unknown>
+        return `Atualizar fixo "${req(inner.description)}" para ${formatCurrency(Number(inner.value))} em ${req(inner.accountName)}, categoria ${req(inner.categoryName)}, a partir de ${req(inner.startDate)}`
+      }
       default:
         return toolName
     }

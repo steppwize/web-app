@@ -8,8 +8,8 @@ import {
 } from '../services/accountService'
 import { importOfxStatement as importOfxStatementService } from '../services/importOfx'
 
-export function getHomeCashFlow() {
-  return getHomeCashFlowService()
+export function getHomeCashFlow(accountIds?: string[]) {
+  return getHomeCashFlowService(accountIds)
 }
 
 export function getAccounts() {

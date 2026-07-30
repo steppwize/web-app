@@ -29,7 +29,7 @@ function emptyAccountResponse(): AccountResponse {
   }
 }
 
-export async function getHomeCashFlow(): Promise<CashFlowContract> {
+export async function getHomeCashFlow(accountIds?: string[]): Promise<CashFlowContract> {
   const accountRows = await db.select().from(accounts).where(eq(accounts.deleted, false))
 
   const sums = await db
@@ -40,7 +40,7 @@ export async function getHomeCashFlow(): Promise<CashFlowContract> {
   const sumByAccount = new Map(sums.map((s) => [s.accountId, Number(s.total)]))
 
   const accountResponses: AccountResponse[] = accountRows
-    .filter((a) => a.typeAccount === TypeAccount.Account)
+    .filter((a) => a.typeAccount === TypeAccount.Account && (!accountIds || accountIds.includes(a.id)))
     .map((a) => ({
       ...emptyAccountResponse(),
       id: a.id,
@@ -591,13 +591,20 @@ export async function getInvoicePreview(
 // checking accounts, so the window is just the calendar month, and "known" items come from the
 // user-managed fixedTransactions table instead of description-regex/variance heuristics — the user
 // decides what's fixed, unlike the card's auto-detected "Fixed" group.
-export async function getAccountPreview(year: number, month: number): Promise<AccountPreviewResponse> {
+export async function getAccountPreview(
+  year: number,
+  month: number,
+  filterAccountIds?: string[],
+): Promise<AccountPreviewResponse> {
   const targetDate = makeDate(year, month, 1)
 
-  const accountRows = await db
+  const allAccountRows = await db
     .select()
     .from(accounts)
     .where(and(eq(accounts.deleted, false), eq(accounts.typeAccount, TypeAccount.Account)))
+  const accountRows = filterAccountIds
+    ? allAccountRows.filter((a) => filterAccountIds.includes(a.id))
+    : allAccountRows
   const accountIds = accountRows.map((a) => a.id)
   const accountById = new Map(accountRows.map((a) => [a.id, a]))
   if (accountIds.length === 0) return { value: 0, transactions: [] }
@@ -639,8 +646,19 @@ export async function getAccountPreview(year: number, month: number): Promise<Ac
   // pinned to a plausible day-of-month (the fixed transaction's own recurring day, or the historical
   // average day for a category) instead of always the 1st — this lets the account preview render
   // as a day-by-day forecast (see TransactionsPage's day-grouped preview) instead of one flat list.
+  function previewDate(desiredDay: number): Date {
+    return makeDate(year, month, Math.min(Math.max(1, desiredDay), monthDayCount))
+  }
   function previewDueDate(desiredDay: number): string {
-    return toNaiveTimestamp(makeDate(year, month, Math.min(Math.max(1, desiredDay), monthDayCount)))
+    return toNaiveTimestamp(previewDate(desiredDay))
+  }
+  // A preview row pinned to a day that's already elapsed represents something that would have
+  // already happened by now — showing it as an upcoming estimate would be misleading, so both the
+  // Fixed and CategoryAverage placements below skip any day before today.
+  const now = new Date()
+  const todayStart = makeDate(now.getFullYear(), now.getMonth() + 1, now.getDate())
+  function isPastDay(desiredDay: number): boolean {
+    return previewDate(desiredDay) < todayStart
   }
 
   const previewItems: TransactionContract[] = []
@@ -649,8 +667,12 @@ export async function getAccountPreview(year: number, month: number): Promise<Ac
 
   for (const f of activeFixed) {
     if (f.categoryId) excludedCategoryIds.add(f.categoryId)
+    const fixedDay = parseNaiveTimestamp(f.startDate).getDate()
+    if (isPastDay(fixedDay)) continue
     previewItems.push({
-      id: crypto.randomUUID(),
+      // Reused (not randomUUID) so a 'Fixed' preview row can be traced back to the fixedTransactions
+      // row it came from — TransactionsPage uses this to open the fixed-transaction edit modal.
+      id: f.id,
       type: f.value < 0 ? 1 : 0,
       description: f.description ?? '',
       value: f.value,
@@ -659,7 +681,7 @@ export async function getAccountPreview(year: number, month: number): Promise<Ac
       accountTo: '',
       paidOut: false,
       typeTransaction: 0,
-      dueDate: previewDueDate(parseNaiveTimestamp(f.startDate).getDate()),
+      dueDate: previewDueDate(fixedDay),
       categoryId: f.categoryId ?? '',
       categoryName: f.categoryName ?? '',
       icon: f.categoryIcon ?? '',
@@ -711,19 +733,40 @@ export async function getAccountPreview(year: number, month: number): Promise<Ac
     categoryGroups.set(key, list)
   }
 
-  for (const group of categoryGroups.values()) {
+  // Real transactions already entered for the target month itself (not part of the lookback
+  // window above, which stops before targetDate) — subtracted from each category's average below
+  // so a real entry and its category's estimate don't both count toward the projected total.
+  const targetMonthEnd = addMonths(targetDate, 1)
+  const realThisMonthByCategory = new Map<string, number>()
+  for (const t of allTx) {
+    const d = parseNaiveTimestamp(t.dueDate)
+    if (d < targetDate || d >= targetMonthEnd) continue
+    const key = t.categoryId ?? ''
+    realThisMonthByCategory.set(key, (realThisMonthByCategory.get(key) ?? 0) + t.value)
+  }
+
+  for (const [key, group] of categoryGroups) {
     const average = group.reduce((sum, t) => sum + t.value, 0) / monthsInWindow
     if (average === 0) continue
 
-    const sample = group[0]
+    // Remaining amount still expected for the category this month. If what's already been entered
+    // matches or exceeds the average (remaining is zero or flips sign), the category is covered —
+    // drop the row instead of showing a bogus reversed estimate.
+    const alreadyReal = realThisMonthByCategory.get(key) ?? 0
+    const remaining = average - alreadyReal
+    if (remaining === 0 || Math.sign(remaining) !== Math.sign(average)) continue
+
     const avgDay = Math.round(
       group.reduce((sum, t) => sum + parseNaiveTimestamp(t.dueDate).getDate(), 0) / group.length,
     )
+    if (isPastDay(avgDay)) continue
+
+    const sample = group[0]
     previewItems.push({
       id: crypto.randomUUID(),
-      type: average < 0 ? 1 : 0,
+      type: remaining < 0 ? 1 : 0,
       description: sample.categoryName ?? '',
-      value: average,
+      value: remaining,
       account: '',
       accountId: '',
       accountTo: '',

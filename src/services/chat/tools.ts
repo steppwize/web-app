@@ -5,10 +5,12 @@ import { getAccounts, getHomeCashFlow } from '../../api/accounts'
 import { listMemories, saveMemory } from '../../api/agentMemories'
 import { getCards, getInvoice, getInvoicePreview } from '../../api/cards'
 import { getCategories } from '../../api/categories'
+import { getFixedTransactions, updateFixedTransaction, type FixedTransactionInput } from '../../api/fixedTransactions'
 import { applyRules } from '../../api/rules'
 import {
   createTransaction,
   deleteTransaction,
+  getAccountPreview,
   getTransactions,
   updateTransaction,
   updateTransactionCategory,
@@ -25,6 +27,7 @@ export const MUTATING_TOOL_NAMES = [
   'updateTransactionsCategoryBulk',
   'deleteTransaction',
   'applyRules',
+  'updateFixedTransaction',
 ] as const
 
 export function buildToolApprovalConfig(): ToolApprovalConfiguration<ToolSet, never> {
@@ -49,6 +52,22 @@ const transactionInputSchema = z.object({
 })
 
 function toTransactionInput(input: z.infer<typeof transactionInputSchema>): TransactionInput {
+  return input
+}
+
+// Same display-only convenience as transactionInputSchema above (accountName/categoryName ignored by execute).
+const fixedTransactionInputSchema = z.object({
+  description: z.string().describe('Descrição do lançamento fixo'),
+  value: z.number().describe('Valor com sinal: positivo para receita, negativo para despesa'),
+  accountId: z.string().describe('ID da conta bancária'),
+  accountName: z.string().describe('Nome da conta — apenas para exibir ao usuário na confirmação'),
+  categoryId: z.string().nullable().describe('ID da categoria, ou null se não categorizada'),
+  categoryName: z.string().describe('Nome da categoria, ou "Sem categoria" — apenas para exibir ao usuário na confirmação'),
+  startDate: z.string().describe("Data a partir da qual o fixo passa a valer, no formato 'YYYY-MM-DD' — o dia do mês é o que aparece nas previsões"),
+  endDate: z.string().nullable().describe("Data final (inclusive), 'YYYY-MM-DD', ou null se não tiver fim (ex: aluguel, salário)"),
+})
+
+function toFixedTransactionInput(input: z.infer<typeof fixedTransactionInputSchema>): FixedTransactionInput {
   return input
 }
 
@@ -109,6 +128,35 @@ export function buildChatTools(queryClient: QueryClient): ToolSet {
         month: z.number().int().min(1).max(12),
       }),
       execute: async ({ cardId, year, month }) => getInvoicePreview(cardId, year, month),
+    }),
+
+    getAccountPreview: tool({
+      description:
+        'Estima as transações de uma conta bancária para um mês/ano que ainda não tem lançamentos reais, a partir dos fixos cadastrados (fixed_transactions) e da média por categoria. Use esta tool (não listTransactions) quando o usuário mencionar itens "fixos", "recorrentes" ou "previstos" de uma conta em um mês futuro/vazio.',
+      inputSchema: z.object({
+        year: z.number().int().describe('Ano, ex: 2026'),
+        month: z.number().int().min(1).max(12).describe('Mês (1-12)'),
+      }),
+      execute: async ({ year, month }) => getAccountPreview(year, month),
+    }),
+
+    listFixedTransactions: tool({
+      description:
+        'Lista os lançamentos fixos/recorrentes cadastrados (aluguel, salário, assinaturas etc) para contas bancárias. Cada um tem uma startDate cujo dia do mês é o dia em que aparece nas previsões (getAccountPreview) — para mudar esse dia, edite a startDate via updateFixedTransaction.',
+      inputSchema: z.object({}),
+      execute: async () => getFixedTransactions(),
+    }),
+
+    updateFixedTransaction: tool({
+      description:
+        'Atualiza um lançamento fixo/recorrente existente (ex: mudar o dia do mês, valor, conta ou categoria). Requer confirmação do usuário antes de executar.',
+      inputSchema: z.object({ id: z.string(), input: fixedTransactionInputSchema }),
+      execute: async ({ id, input }) => {
+        const result = await updateFixedTransaction(id, toFixedTransactionInput(input))
+        queryClient.invalidateQueries({ queryKey: ['fixed-transactions'] })
+        queryClient.invalidateQueries({ queryKey: ['account-preview'] })
+        return result
+      },
     }),
 
     listCategories: tool({
