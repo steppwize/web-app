@@ -117,7 +117,7 @@ export function CardInvoicePage() {
   return (
     <div>
       {/* Mobile */}
-      <div className="lg:hidden flex flex-col h-screen">
+      <div className="lg:hidden flex flex-col h-dvh">
         <div className="flex items-center gap-2.5 px-4 py-3">
           <button onClick={() => navigate('/cartoes')}>
             <ChevronLeft size={22} />
@@ -184,7 +184,7 @@ export function CardInvoicePage() {
       </div>
 
       {/* Desktop */}
-      <div className="hidden lg:flex flex-col gap-5 p-8 h-screen">
+      <div className="hidden lg:flex flex-col gap-5 p-8 h-dvh">
         <span className="text-[13px] text-muted">Cartões&nbsp;&nbsp;/&nbsp;&nbsp;{invoice.name}</span>
 
         <div className="flex items-center justify-between">

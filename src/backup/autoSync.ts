@@ -96,6 +96,13 @@ async function doPush(interactive: boolean): Promise<void> {
       const meta = await getAutosaveMeta(fileId)
       const remoteSeq = Number(meta.appProperties.seq ?? '0')
       if (remoteSeq !== state.lastSyncedSeq) {
+        // Remote moved since we last knew about it. Only a real conflict if THIS device also has
+        // unsynced local changes — otherwise (e.g. a brand-new device's first sync) it's just
+        // behind, so pull instead of scaring the user with a conflict prompt.
+        if (!state.dirty) {
+          await pullRemote(fileId)
+          return
+        }
         useSyncStore.getState().setConflict({
           autosaveFileId: fileId,
           remoteSeq,
@@ -195,42 +202,52 @@ export async function pullRemote(fileId: string): Promise<void> {
 
 // Cheap metadata-only check for whether another device has written a newer autosave. Never opens
 // a popup — background checks must not surprise the user with a Google auth window.
-export async function checkRemote(): Promise<void> {
+//
+// Shares the `inFlight` mutex with syncNow()/doPush(): it's assigned synchronously (before any
+// await) so a concurrent syncNow() call sees it and piggybacks on this same task instead of
+// starting a second, racing Drive operation from a stale local `state` snapshot.
+export function checkRemote(): Promise<void> {
   const state = getSyncState()
-  if (!state.autoSyncEnabled) return
-  if (inFlight) return
+  if (!state.autoSyncEnabled) return Promise.resolve()
+  if (inFlight) return inFlight
   const now = Date.now()
-  if (now - lastRemoteCheckAt < FOCUS_THROTTLE_MS) return
+  if (now - lastRemoteCheckAt < FOCUS_THROTTLE_MS) return Promise.resolve()
   lastRemoteCheckAt = now
 
-  try {
-    const token = getAccessTokenSilent()
-    if (!token) return
+  const task = (async () => {
+    try {
+      const token = getAccessTokenSilent()
+      if (!token) return
 
-    let fileId = state.autosaveFileId
-    if (!fileId) {
-      fileId = await findAutosaveFile()
-      if (!fileId) return
-      updateSyncState({ autosaveFileId: fileId })
+      let fileId = state.autosaveFileId
+      if (!fileId) {
+        fileId = await findAutosaveFile()
+        if (!fileId) return
+        updateSyncState({ autosaveFileId: fileId })
+      }
+
+      const meta = await getAutosaveMeta(fileId)
+      const remoteSeq = Number(meta.appProperties.seq ?? '0')
+      if (remoteSeq <= state.lastSyncedSeq) return
+
+      if (!state.dirty) {
+        await pullRemote(fileId)
+        return
+      }
+
+      useSyncStore.getState().setConflict({
+        autosaveFileId: fileId,
+        remoteSeq,
+        remoteDeviceName: meta.appProperties.deviceName ?? 'outro dispositivo',
+      })
+    } catch {
+      // Background checks fail silently — syncNow() surfaces real problems the next time it runs.
     }
-
-    const meta = await getAutosaveMeta(fileId)
-    const remoteSeq = Number(meta.appProperties.seq ?? '0')
-    if (remoteSeq <= state.lastSyncedSeq) return
-
-    if (!state.dirty) {
-      await pullRemote(fileId)
-      return
-    }
-
-    useSyncStore.getState().setConflict({
-      autosaveFileId: fileId,
-      remoteSeq,
-      remoteDeviceName: meta.appProperties.deviceName ?? 'outro dispositivo',
-    })
-  } catch {
-    // Background checks fail silently — syncNow() surfaces real problems the next time it runs.
-  }
+  })()
+  inFlight = task.finally(() => {
+    inFlight = null
+  })
+  return inFlight
 }
 
 export async function resolveConflict(choice: 'local' | 'remote'): Promise<void> {
@@ -298,7 +315,7 @@ function handleVisibilityChange(): void {
   }
 }
 
-export function startAutoSync(): void {
+export function startAutoSync(opts: { skipInitialCheck?: boolean } = {}): void {
   const state = getSyncState()
   hydrateGrantedBefore(state.grantedBefore)
   if (!state.autoSyncEnabled) {
@@ -316,7 +333,10 @@ export function startAutoSync(): void {
     if (document.visibilityState === 'visible') void checkRemote()
   }, POLL_MS)
 
-  void checkRemote()
+  // enableAutoSync() runs its own syncNow() right after this — skip the redundant concurrent
+  // checkRemote() there, since it would race a fresh interactive push from a stale `state`
+  // snapshot (both read local sync state before either has a chance to update the other).
+  if (!opts.skipInitialCheck) void checkRemote()
 }
 
 export function stopAutoSync(): void {
@@ -341,7 +361,7 @@ export async function enableAutoSync(): Promise<void> {
   await getAccessToken()
   updateSyncState({ autoSyncEnabled: true, grantedBefore: true })
   hydrateGrantedBefore(true)
-  startAutoSync()
+  startAutoSync({ skipInitialCheck: true })
   await syncNow({ interactive: true })
 }
 

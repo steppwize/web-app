@@ -19,7 +19,7 @@ import {
   useDeleteTransaction,
 } from '../hooks/useTransactions'
 import { useHomeCashFlow } from '../hooks/useHomeCashFlow'
-import { useAccountPreview } from '../hooks/useAccountPreview'
+import { useAccountPreview, useAccountPreviewCarry } from '../hooks/useAccountPreview'
 import { useCardsPreview } from '../hooks/useCardsPreview'
 import {
   useFixedTransactions,
@@ -232,6 +232,10 @@ export function TransactionsPage() {
   const { data: preview, isLoading: isPreviewLoading } = useAccountPreview(year, month, {
     accountIds: accountFilterIds,
   })
+  // Any in-between preview-only months' projected effect (e.g. a month that estimates negative)
+  // never reaches the server-computed startingBalance below — see getAccountPreviewCarry.
+  const { data: previewCarry } = useAccountPreviewCarry(year, month, { accountIds: accountFilterIds })
+  const previewStartingBalance = (monthSummary?.startingBalance ?? 0) + (previewCarry ?? 0)
   // Real + preview transactions merged into one day-by-day forecast (`reverse: false`: day 1
   // first, since this looks forward through the month rather than back).
   const combinedTransactions = useMemo(
@@ -239,8 +243,8 @@ export function TransactionsPage() {
     [txData, preview],
   )
   const accountPreviewDayGroups = useMemo(
-    () => computeDayGroups(combinedTransactions, monthSummary?.startingBalance ?? 0, { reverse: false }),
-    [combinedTransactions, monthSummary],
+    () => computeDayGroups(combinedTransactions, previewStartingBalance, { reverse: false }),
+    [combinedTransactions, previewStartingBalance],
   )
 
   // Independent of the account preview above: each card decides on its own (server-side) whether
@@ -263,7 +267,7 @@ export function TransactionsPage() {
 
     const sortedKeys = [...new Set([...accountByDate.keys(), ...cardsByDate.keys()])].sort()
 
-    let runningBalance = monthSummary?.startingBalance ?? 0
+    let runningBalance = previewStartingBalance
     return sortedKeys.map((dateKey) => {
       const accountGroup = accountByDate.get(dateKey)
       // Add this day's own total rather than jumping to accountGroup.endOfDayBalance — that value
@@ -282,7 +286,7 @@ export function TransactionsPage() {
         endOfDayBalance: runningBalance,
       }
     })
-  }, [accountPreviewDayGroups, cardsPreview, monthSummary])
+  }, [accountPreviewDayGroups, cardsPreview, previewStartingBalance])
 
   const filteredPreviewDayGroups = useMemo(() => {
     const q = query.trim().toLowerCase()
@@ -299,7 +303,7 @@ export function TransactionsPage() {
   const displayedProjectedBalance =
     previewDayGroups.length > 0
       ? previewDayGroups[previewDayGroups.length - 1].endOfDayBalance
-      : (monthSummary?.startingBalance ?? 0)
+      : previewStartingBalance
 
   function goToPreviousMonth() {
     if (month === 1) {
@@ -401,7 +405,7 @@ export function TransactionsPage() {
       )}
 
       {/* Mobile */}
-      <div className="lg:hidden flex flex-col h-screen">
+      <div className="lg:hidden flex flex-col h-dvh">
         <div className="flex flex-col gap-3 px-4 pt-4">
           <div className="flex items-center justify-between">
             <button onClick={goToPreviousMonth}>
@@ -464,28 +468,36 @@ export function TransactionsPage() {
           />
         </div>
 
-        <div className="fixed bottom-24 left-0 right-0 flex items-center justify-between px-5 h-[72px] bg-surface border-t border-border">
+        <div className="fixed bottom-20 left-0 right-0 flex items-center justify-between px-5 h-[72px] bg-surface border-t border-border">
           <div className="flex flex-col">
             <span className="text-xs text-muted">Saldo atual</span>
-            <span className="text-base font-bold text-positive">{formatCurrency(cashFlow?.total ?? 0)}</span>
+            <span
+              className={`text-base font-bold ${(cashFlow?.total ?? 0) < 0 ? 'text-negative' : 'text-positive'}`}
+            >
+              {formatCurrency(cashFlow?.total ?? 0)}
+            </span>
           </div>
           <div className="flex flex-col items-end">
             <span className="text-xs text-muted">Previsto fim do mês</span>
-            <span className="text-base font-bold text-positive">{formatCurrency(displayedProjectedBalance)}</span>
+            <span
+              className={`text-base font-bold ${displayedProjectedBalance < 0 ? 'text-negative' : 'text-positive'}`}
+            >
+              {formatCurrency(displayedProjectedBalance)}
+            </span>
           </div>
         </div>
 
         <button
           onClick={openCreateTransaction}
-          className="fixed bottom-32 right-5 w-14 h-14 rounded-full bg-brand flex items-center justify-center shadow-lg"
+          className="fixed z-30 bottom-[164px] right-24 w-14 h-14 rounded-full bg-brand flex items-center justify-center shadow-lg"
         >
           <Plus size={24} />
         </button>
       </div>
 
       {/* Desktop */}
-      <div className="hidden lg:flex flex-col gap-6 p-8 h-screen">
-        <div className="flex items-center justify-between">
+      <div className="hidden lg:flex flex-col gap-4 xl:gap-6 p-5 xl:p-8 h-dvh">
+        <div className="flex items-center justify-between gap-3 flex-wrap">
           <div className="flex flex-col gap-2">
             <h1 className="text-2xl font-bold">Transações</h1>
             <div className="flex items-center gap-3 text-sm text-muted">
@@ -499,14 +511,14 @@ export function TransactionsPage() {
             </div>
           </div>
 
-          <div className="flex items-center gap-2.5">
-            <div className="flex items-center gap-2 h-10 w-[220px] px-3 rounded-[10px] bg-card border border-border">
-              <Search size={16} className="text-muted" />
+          <div className="flex items-center gap-2 xl:gap-2.5 flex-wrap justify-end">
+            <div className="flex items-center gap-2 h-10 w-[160px] xl:w-[220px] px-3 rounded-[10px] bg-card border border-border">
+              <Search size={16} className="text-muted shrink-0" />
               <input
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
                 placeholder="Buscar transação..."
-                className="flex-1 bg-transparent text-sm outline-none placeholder:text-muted"
+                className="flex-1 min-w-0 bg-transparent text-sm outline-none placeholder:text-muted"
               />
             </div>
             <button
@@ -516,7 +528,7 @@ export function TransactionsPage() {
               <Repeat size={16} /> Fixos
             </button>
             <div className="flex items-center gap-2 text-sm text-muted">
-              <span>Saldo fim do dia</span>
+              <span className="hidden xl:inline">Saldo fim do dia</span>
               <Toggle checked={showEodBalance} onChange={setShowEodBalance} />
             </div>
             <button
@@ -528,8 +540,8 @@ export function TransactionsPage() {
           </div>
         </div>
 
-        <div className="flex-1 flex gap-5 min-h-0">
-          <Card className="flex-1 overflow-y-auto">
+        <div className="flex-1 flex gap-4 xl:gap-5 min-h-0">
+          <Card className="flex-1 overflow-y-auto min-w-0">
             <div className="flex flex-col gap-2 px-4 py-3">
               <AccountPreviewSection
                 dayGroups={filteredPreviewDayGroups}
@@ -546,7 +558,7 @@ export function TransactionsPage() {
             </div>
           </Card>
 
-          <div className="w-[280px] shrink-0 flex flex-col gap-3">
+          <div className="w-[220px] xl:w-[280px] shrink-0 flex flex-col gap-3">
             <Card className="p-5 flex flex-col gap-4">
               <h2 className="text-sm font-semibold">Resumo do Mês</h2>
               <SummaryRow label="Receitas" display={formatSignedCurrency(monthSummary.totalRevenue)} tone="positive" />
@@ -558,11 +570,15 @@ export function TransactionsPage() {
             </Card>
             <Card className="p-5 flex flex-col gap-4">
               <h2 className="text-sm font-semibold">Saldo</h2>
-              <SummaryRow label="Saldo atual" display={formatCurrency(cashFlow?.total ?? 0)} tone="positive" />
+              <SummaryRow
+                label="Saldo atual"
+                display={formatCurrency(cashFlow?.total ?? 0)}
+                tone={(cashFlow?.total ?? 0) < 0 ? 'negative' : 'positive'}
+              />
               <SummaryRow
                 label="Previsto fim do mês"
                 display={formatCurrency(displayedProjectedBalance)}
-                tone="positive"
+                tone={displayedProjectedBalance < 0 ? 'negative' : 'positive'}
               />
             </Card>
             {bankAccounts.length > 0 && (
@@ -710,11 +726,11 @@ function TransactionTableRow({
           </span>
         </div>
       </div>
-      <span className="w-32 text-sm text-muted truncate">{transaction.categoryName}</span>
-      <span className={`w-32 text-right text-sm font-semibold ${value >= 0 ? 'text-positive' : 'text-negative'}`}>
+      <span className="w-20 xl:w-32 text-sm text-muted truncate">{transaction.categoryName}</span>
+      <span className={`w-24 xl:w-32 text-right text-sm font-semibold ${value >= 0 ? 'text-positive' : 'text-negative'}`}>
         {formatSignedCurrency(value)}
       </span>
-      <span className="w-16 flex items-center justify-center">
+      <span className="w-10 xl:w-16 flex items-center justify-center">
         {!transaction.previewSource && (
           <span
             className={`w-[9px] h-[9px] rounded-full ${
@@ -912,9 +928,9 @@ function PreviewDayTable({
     <div className="flex flex-col">
       <div className="flex items-center h-11 px-4 bg-surface text-xs font-semibold text-muted">
         <span className="flex-1">Transação</span>
-        <span className="w-32">Categoria</span>
-        <span className="w-32 text-right">Valor</span>
-        <span className="w-16 text-center">Status</span>
+        <span className="w-20 xl:w-32">Categoria</span>
+        <span className="w-24 xl:w-32 text-right">Valor</span>
+        <span className="w-10 xl:w-16 text-center">Status</span>
       </div>
       {groups.map((group) => (
         <div key={group.dateKey}>
@@ -990,13 +1006,13 @@ function CardAggregateTableRow({ card, onClick }: { card: CardPreviewGroup; onCl
           <span className="text-xs text-muted truncate">Ver por categoria</span>
         </div>
       </div>
-      <span className="w-32 text-sm text-muted truncate">—</span>
+      <span className="w-20 xl:w-32 text-sm text-muted truncate">—</span>
       <span
-        className={`w-32 text-right text-sm font-semibold ${card.value >= 0 ? 'text-positive' : 'text-negative'}`}
+        className={`w-24 xl:w-32 text-right text-sm font-semibold ${card.value >= 0 ? 'text-positive' : 'text-negative'}`}
       >
         {formatSignedCurrency(card.value)}
       </span>
-      <span className="w-16 flex items-center justify-center">
+      <span className="w-10 xl:w-16 flex items-center justify-center">
         <ChevronRight size={14} className="text-muted" />
       </span>
     </button>

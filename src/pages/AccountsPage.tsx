@@ -146,7 +146,7 @@ export function AccountsPage() {
       )}
 
       {/* Mobile */}
-      <div className="lg:hidden flex flex-col h-screen">
+      <div className="lg:hidden flex flex-col h-dvh">
         <div className="flex items-center justify-between px-4 h-14">
           <h1 className="text-[22px] font-bold">Contas</h1>
           <button onClick={openCreate} className="text-brand">

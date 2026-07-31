@@ -8,7 +8,7 @@ export function ChatButton() {
     <button
       onClick={open}
       aria-label="Abrir assistente"
-      className="fixed z-30 right-5 bottom-24 lg:bottom-6 w-14 h-14 rounded-full bg-brand text-white shadow-lg flex items-center justify-center hover:bg-brand-light transition-colors"
+      className="fixed z-30 right-5 bottom-[164px] lg:bottom-6 w-14 h-14 rounded-full bg-brand text-white shadow-lg flex items-center justify-center hover:bg-brand-light transition-colors"
     >
       <MessageCircle size={24} />
     </button>

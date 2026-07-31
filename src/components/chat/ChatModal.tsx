@@ -480,6 +480,8 @@ function describeToolCall(toolName: string, input: unknown): string {
         const inner = (data.input ?? {}) as Record<string, unknown>
         return `Atualizar fixo "${req(inner.description)}" para ${formatCurrency(Number(inner.value))} em ${req(inner.accountName)}, categoria ${req(inner.categoryName)}, a partir de ${req(inner.startDate)}`
       }
+      case 'deleteFixedTransaction':
+        return `Remover o fixo "${req(data.description)}"`
       default:
         return toolName
     }

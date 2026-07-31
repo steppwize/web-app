@@ -92,7 +92,7 @@ export function HomePage() {
           <StatTile
             label="Previsto fim do mês"
             display={formatCurrency(monthSummary?.projectedEndBalance ?? cashFlow.total)}
-            tone="neutral"
+            tone={(monthSummary?.projectedEndBalance ?? cashFlow.total) < 0 ? 'negative' : 'positive'}
           />
         </div>
 

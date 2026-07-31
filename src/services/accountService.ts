@@ -796,6 +796,34 @@ export async function getAccountPreview(
   }
 }
 
+// getTransactions' previousMonthSummary (the account preview's starting balance) is a straight
+// port of core-api, which has no notion of "preview" at all — it only ever sums real, paidOut
+// transactions before the target month. So when an in-between month has no real transactions yet
+// and is itself being rendered as a preview (e.g. its estimated spend pushes it negative), that
+// month's projected effect never reaches the following month's opening balance. This walks back
+// from the target month, summing each intervening month's own preview `value` (already netted
+// against whatever's real in that month), down to and including the current calendar month —
+// months before that are always fully real and already correctly reflected server-side, and
+// getAccountPreview itself returns 0 for any fully-past month (see isPastDay), so there's no need
+// to special-case where the walk stops beyond that floor.
+export async function getAccountPreviewCarry(
+  year: number,
+  month: number,
+  filterAccountIds?: string[],
+): Promise<number> {
+  const now = new Date()
+  const floor = makeDate(now.getFullYear(), now.getMonth() + 1, 1)
+
+  let carry = 0
+  let cursor = addMonths(makeDate(year, month, 1), -1)
+  while (cursor >= floor) {
+    const preview = await getAccountPreview(cursor.getFullYear(), cursor.getMonth() + 1, filterAccountIds)
+    carry += preview.value
+    cursor = addMonths(cursor, -1)
+  }
+  return carry
+}
+
 export interface CardPreviewGroup {
   cardId: string
   cardName: string

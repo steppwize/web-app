@@ -5,7 +5,12 @@ import { getAccounts, getHomeCashFlow } from '../../api/accounts'
 import { listMemories, saveMemory } from '../../api/agentMemories'
 import { getCards, getInvoice, getInvoicePreview } from '../../api/cards'
 import { getCategories } from '../../api/categories'
-import { getFixedTransactions, updateFixedTransaction, type FixedTransactionInput } from '../../api/fixedTransactions'
+import {
+  deleteFixedTransaction,
+  getFixedTransactions,
+  updateFixedTransaction,
+  type FixedTransactionInput,
+} from '../../api/fixedTransactions'
 import { applyRules } from '../../api/rules'
 import {
   createTransaction,
@@ -28,6 +33,7 @@ export const MUTATING_TOOL_NAMES = [
   'deleteTransaction',
   'applyRules',
   'updateFixedTransaction',
+  'deleteFixedTransaction',
 ] as const
 
 export function buildToolApprovalConfig(): ToolApprovalConfiguration<ToolSet, never> {
@@ -153,6 +159,21 @@ export function buildChatTools(queryClient: QueryClient): ToolSet {
       inputSchema: z.object({ id: z.string(), input: fixedTransactionInputSchema }),
       execute: async ({ id, input }) => {
         const result = await updateFixedTransaction(id, toFixedTransactionInput(input))
+        queryClient.invalidateQueries({ queryKey: ['fixed-transactions'] })
+        queryClient.invalidateQueries({ queryKey: ['account-preview'] })
+        return result
+      },
+    }),
+
+    deleteFixedTransaction: tool({
+      description:
+        'Remove (soft delete) um lançamento fixo/recorrente cadastrado. Requer confirmação do usuário antes de executar.',
+      inputSchema: z.object({
+        id: z.string(),
+        description: z.string().describe('Descrição do lançamento fixo — apenas para exibir ao usuário na confirmação'),
+      }),
+      execute: async ({ id }) => {
+        const result = await deleteFixedTransaction(id)
         queryClient.invalidateQueries({ queryKey: ['fixed-transactions'] })
         queryClient.invalidateQueries({ queryKey: ['account-preview'] })
         return result

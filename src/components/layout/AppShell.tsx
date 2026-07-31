@@ -6,9 +6,9 @@ import { ChatModal } from '../chat/ChatModal'
 
 export function AppShell({ children }: { children: ReactNode }) {
   return (
-    <div className="min-h-screen flex bg-bg text-white">
+    <div className="h-dvh flex bg-bg text-white overflow-hidden">
       <Sidebar />
-      <div className="flex-1 min-w-0 pb-28 lg:pb-0">{children}</div>
+      <div className="flex-1 min-w-0 min-h-0">{children}</div>
       <BottomTabBar />
       <ChatButton />
       <ChatModal />
