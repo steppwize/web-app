@@ -126,6 +126,9 @@ create table if not exists chat_history (
   updated_at timestamp not null default now()
 );
 
+alter table chat_history add column if not exists title text;
+alter table chat_history add column if not exists created_at timestamp not null default now();
+
 create table if not exists agent_memories (
   id text primary key,
   content text not null,

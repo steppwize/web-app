@@ -360,6 +360,34 @@ function normalizeDescription(description: string | null | undefined): string {
   return d.trim().toLowerCase()
 }
 
+// `distinctMonths` keys are "year-monthIndex0" (see monthsInWindow above) — turned into an ordered
+// {year, month} list so a 'CategoryAverage' row's previewComposition can show one subtotal per
+// month actually counted in its denominator, in calendar order, instead of just the raw average.
+function orderedMonthKeys(distinctMonths: Set<string>): { year: number; month: number }[] {
+  return [...distinctMonths]
+    .map((key) => {
+      const [year, month0] = key.split('-').map(Number)
+      return { year, month: month0 + 1 }
+    })
+    .sort((a, b) => a.year * 12 + a.month - (b.year * 12 + b.month))
+}
+
+function monthlyTotalsFor<T extends { value: number; dueDate: string }>(
+  group: T[],
+  monthKeys: { year: number; month: number }[],
+): { year: number; month: number; total: number }[] {
+  return monthKeys.map(({ year, month }) => ({
+    year,
+    month,
+    total: group
+      .filter((t) => {
+        const d = parseNaiveTimestamp(t.dueDate)
+        return d.getFullYear() === year && d.getMonth() + 1 === month
+      })
+      .reduce((sum, t) => sum + t.value, 0),
+  }))
+}
+
 export async function getInvoicePreview(
   cardId: string,
   year: number,
@@ -415,6 +443,7 @@ export async function getInvoicePreview(
     }),
   )
   const monthsInWindow = Math.max(1, distinctMonths.size)
+  const monthKeys = orderedMonthKeys(distinctMonths)
 
   const claimedIds = new Set<string>()
   const previewItems: TransactionContract[] = []
@@ -571,6 +600,19 @@ export async function getInvoicePreview(
       recurrencyType: null,
       frequencyType: 5,
       previewSource: 'CategoryAverage',
+      previewComposition: {
+        monthsInWindow,
+        monthlyTotals: monthlyTotalsFor(group, monthKeys),
+        sourceTransactions: group.map((t) => ({
+          id: t.id,
+          description: t.description ?? '',
+          value: t.value,
+          dueDate: t.dueDate,
+        })),
+        // The card preview's lookback window always ends before the target month's own invoice
+        // (see windowEnd above), so there's no real-this-month entry to net out here.
+        realThisMonthTransactions: [],
+      },
     })
   }
 
@@ -701,6 +743,8 @@ export async function getAccountPreview(
   const lookbackStart = addMonths(targetDate, -3)
   const allTx = await db
     .select({
+      id: transactions.id,
+      description: transactions.description,
       value: transactions.value,
       dueDate: transactions.dueDate,
       categoryId: transactions.categoryId,
@@ -724,6 +768,7 @@ export async function getAccountPreview(
     }),
   )
   const monthsInWindow = Math.max(1, distinctMonths.size)
+  const monthKeys = orderedMonthKeys(distinctMonths)
 
   const categoryGroups = new Map<string, typeof lookbackTransactions>()
   for (const t of lookbackTransactions) {
@@ -738,11 +783,15 @@ export async function getAccountPreview(
   // so a real entry and its category's estimate don't both count toward the projected total.
   const targetMonthEnd = addMonths(targetDate, 1)
   const realThisMonthByCategory = new Map<string, number>()
+  const realThisMonthItemsByCategory = new Map<string, typeof allTx>()
   for (const t of allTx) {
     const d = parseNaiveTimestamp(t.dueDate)
     if (d < targetDate || d >= targetMonthEnd) continue
     const key = t.categoryId ?? ''
     realThisMonthByCategory.set(key, (realThisMonthByCategory.get(key) ?? 0) + t.value)
+    const items = realThisMonthItemsByCategory.get(key) ?? []
+    items.push(t)
+    realThisMonthItemsByCategory.set(key, items)
   }
 
   for (const [key, group] of categoryGroups) {
@@ -785,6 +834,22 @@ export async function getAccountPreview(
       recurrencyType: null,
       frequencyType: 5,
       previewSource: 'CategoryAverage',
+      previewComposition: {
+        monthsInWindow,
+        monthlyTotals: monthlyTotalsFor(group, monthKeys),
+        sourceTransactions: group.map((t) => ({
+          id: t.id,
+          description: t.description ?? '',
+          value: t.value,
+          dueDate: t.dueDate,
+        })),
+        realThisMonthTransactions: (realThisMonthItemsByCategory.get(key) ?? []).map((t) => ({
+          id: t.id,
+          description: t.description ?? '',
+          value: t.value,
+          dueDate: t.dueDate,
+        })),
+      },
     })
   }
 

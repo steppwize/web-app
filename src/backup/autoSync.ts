@@ -293,9 +293,11 @@ export async function resolveConflict(choice: 'local' | 'remote'): Promise<void>
   }
 }
 
-// Runs inside a capture-phase pointerdown handler so the popup (if GIS decides it needs one) is
-// never blocked — it's still inside a real user gesture. Most of the time, with prompt: '' and an
-// existing grant, GIS reissues a token with no visible UI at all.
+// Runs inside a bubble-phase click handler so the popup (if GIS decides it needs one) is never
+// blocked — it's still inside a real user gesture — while letting the click's own target handle the
+// event first. Most of the time, with prompt: '' and an existing grant, GIS reissues a token with no
+// visible UI at all; but when it isn't silent, the popup steals focus and the browser can suppress
+// the page's own click entirely, so this must fire last, not intercept on pointerdown/capture.
 function handleGesture(): void {
   const state = getSyncState()
   if (!state.autoSyncEnabled) return
@@ -327,7 +329,7 @@ export function startAutoSync(opts: { skipInitialCheck?: boolean } = {}): void {
   if (running) return
   running = true
 
-  document.addEventListener('pointerdown', handleGesture, true)
+  document.addEventListener('click', handleGesture)
   document.addEventListener('visibilitychange', handleVisibilityChange)
   pollTimer = setInterval(() => {
     if (document.visibilityState === 'visible') void checkRemote()
@@ -341,7 +343,7 @@ export function startAutoSync(opts: { skipInitialCheck?: boolean } = {}): void {
 
 export function stopAutoSync(): void {
   running = false
-  document.removeEventListener('pointerdown', handleGesture, true)
+  document.removeEventListener('click', handleGesture)
   document.removeEventListener('visibilitychange', handleVisibilityChange)
   if (pollTimer) {
     clearInterval(pollTimer)

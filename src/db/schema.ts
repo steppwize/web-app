@@ -125,14 +125,16 @@ export const llmSettings = pgTable('llm_settings', {
   updatedAt: timestamp('updated_at', { mode: 'string' }).notNull().defaultNow(),
 })
 
-// Single-row table (fixed id 'default') holding the assistant's conversation as one JSON blob —
-// the whole `useChat` messages array, replace-on-write. A single conversation (no per-thread
-// modeling) matches how ChatModal is used today; message `parts` already have arbitrary shapes
-// (text, tool calls, approvals), so storing them as opaque JSON avoids modeling that structure
-// relationally for no benefit in a single-user local app.
+// One row per chat session/conversation, each holding its `useChat` messages array as one JSON
+// blob, replace-on-write. Message `parts` already have arbitrary shapes (text, tool calls,
+// approvals), so storing them as opaque JSON avoids modeling that structure relationally for no
+// benefit in a single-user local app. `title` is derived from the first user message (see
+// deriveTitle in chatHistoryService.ts) and used to label the session in the history list.
 export const chatHistory = pgTable('chat_history', {
   id: text('id').primaryKey(),
+  title: text('title'),
   messages: text('messages').notNull(),
+  createdAt: timestamp('created_at', { mode: 'string' }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { mode: 'string' }).notNull().defaultNow(),
 })
 

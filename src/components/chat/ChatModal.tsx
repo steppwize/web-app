@@ -8,13 +8,16 @@ import {
   type ChatTransport,
   type UIMessage,
 } from 'ai'
-import { Brain, Check, ChevronDown, Loader2, Send, Settings, Trash2, X } from 'lucide-react'
+import { Brain, Check, ChevronDown, History, Loader2, Plus, Send, Settings, Trash2, X } from 'lucide-react'
 import { useChatStore } from '../../store/chatStore'
 import { useLlmSettings, useSaveLlmSettings } from '../../hooks/useLlmSettings'
-import { useChatHistory, useClearChatHistory, useSaveChatHistory } from '../../hooks/useChatHistory'
+import { useChatHistory, useDeleteChatSession, useSaveChatHistory } from '../../hooks/useChatHistory'
+import { useChatSessions } from '../../hooks/useChatSessions'
 import { useAgentMemories } from '../../hooks/useAgentMemories'
 import type { LlmProvider, LlmSettings } from '../../services/llmSettingsService'
 import type { AgentMemory } from '../../services/agentMemoryService'
+import type { ChatSessionSummary } from '../../services/chatHistoryService'
+import { getCurrentSessionId, startNewSession, setCurrentSessionId } from '../../services/chatSession'
 import { createChatAgent } from '../../services/chat/agent'
 import { formatCurrency } from '../../utils/currency'
 
@@ -30,10 +33,12 @@ export function ChatModal() {
   const close = useChatStore((s) => s.close)
   const queryClient = useQueryClient()
   const { data: settings, isLoading: settingsLoading } = useLlmSettings()
-  const { data: initialMessages, isLoading: historyLoading } = useChatHistory()
+  const [sessionId, setSessionId] = useState(() => getCurrentSessionId())
+  const { data: initialMessages, isLoading: historyLoading } = useChatHistory(sessionId)
   const { data: memories, isLoading: memoriesLoading } = useAgentMemories()
-  const clearHistory = useClearChatHistory()
+  const clearHistory = useDeleteChatSession(sessionId)
   const [editingSettings, setEditingSettings] = useState(false)
+  const [showHistory, setShowHistory] = useState(false)
   const [hasMessages, setHasMessages] = useState(false)
   const setConversationMessagesRef = useRef<((messages: UIMessage[]) => void) | null>(null)
   const registerSetMessages = useCallback((setMessages: (messages: UIMessage[]) => void) => {
@@ -48,10 +53,21 @@ export function ChatModal() {
   function handleClearHistory() {
     clearHistory.mutate(undefined, {
       onSuccess: () => {
-        queryClient.setQueryData(['chat-history'], [])
+        queryClient.setQueryData(['chat-history', sessionId], [])
         setConversationMessagesRef.current?.([])
       },
     })
+  }
+
+  function handleNewChat() {
+    setSessionId(startNewSession())
+    setShowHistory(false)
+  }
+
+  function handleSwitchSession(id: string) {
+    setCurrentSessionId(id)
+    setSessionId(id)
+    setShowHistory(false)
   }
 
   return (
@@ -64,9 +80,27 @@ export function ChatModal() {
         className="w-full h-full lg:h-[calc(100vh-3rem)] lg:w-[460px] lg:rounded-2xl bg-card border-0 lg:border border-border flex flex-col overflow-hidden"
       >
         <div className="flex items-center justify-between h-14 px-4 border-b border-border shrink-0">
-          <h2 className="text-sm font-bold">Assistente financeiro</h2>
+          <h2 className="text-sm font-bold">{showHistory ? 'Conversas' : 'Assistente financeiro'}</h2>
           <div className="flex items-center gap-1">
-            {!loading && !showSetup && hasMessages && (
+            {!loading && !showSetup && (
+              <button
+                onClick={handleNewChat}
+                aria-label="Nova conversa"
+                className="w-8 h-8 flex items-center justify-center rounded-lg text-muted bg-surface"
+              >
+                <Plus size={14} />
+              </button>
+            )}
+            {!loading && !showSetup && (
+              <button
+                onClick={() => setShowHistory((v) => !v)}
+                aria-label="Histórico de conversas"
+                className="w-8 h-8 flex items-center justify-center rounded-lg text-muted bg-surface"
+              >
+                <History size={14} />
+              </button>
+            )}
+            {!loading && !showSetup && !showHistory && hasMessages && (
               <button
                 onClick={handleClearHistory}
                 aria-label="Limpar conversa"
@@ -75,7 +109,7 @@ export function ChatModal() {
                 <Trash2 size={14} />
               </button>
             )}
-            {!settingsLoading && settings && (
+            {!settingsLoading && settings && !showHistory && (
               <button
                 onClick={() => setEditingSettings((v) => !v)}
                 aria-label="Configurar provedor"
@@ -98,6 +132,8 @@ export function ChatModal() {
           <div className="flex-1 flex items-center justify-center text-muted">
             <Loader2 size={20} className="animate-spin" />
           </div>
+        ) : showHistory ? (
+          <SessionHistoryList currentSessionId={sessionId} onSelect={handleSwitchSession} />
         ) : showSetup ? (
           <SetupForm
             initial={settings ?? null}
@@ -106,7 +142,9 @@ export function ChatModal() {
         ) : (
           settings && (
             <Conversation
+              key={sessionId}
               settings={settings}
+              sessionId={sessionId}
               initialMessages={initialMessages ?? []}
               memories={memories ?? []}
               onHasMessagesChange={setHasMessages}
@@ -116,6 +154,95 @@ export function ChatModal() {
         )}
       </div>
     </div>
+  )
+}
+
+function SessionHistoryList({
+  currentSessionId,
+  onSelect,
+}: {
+  currentSessionId: string
+  onSelect: (id: string) => void
+}) {
+  const { data: sessions, isLoading } = useChatSessions()
+
+  if (isLoading) {
+    return (
+      <div className="flex-1 flex items-center justify-center text-muted">
+        <Loader2 size={20} className="animate-spin" />
+      </div>
+    )
+  }
+
+  if (!sessions || sessions.length === 0) {
+    return (
+      <div className="flex-1 flex items-center justify-center text-sm text-muted text-center px-8">
+        Nenhuma conversa salva ainda.
+      </div>
+    )
+  }
+
+  return (
+    <div className="flex-1 overflow-y-auto p-2 flex flex-col gap-1">
+      {sessions.map((session) => (
+        <SessionRow
+          key={session.id}
+          session={session}
+          isCurrent={session.id === currentSessionId}
+          onSelect={onSelect}
+        />
+      ))}
+    </div>
+  )
+}
+
+function SessionRow({
+  session,
+  isCurrent,
+  onSelect,
+}: {
+  session: ChatSessionSummary
+  isCurrent: boolean
+  onSelect: (id: string) => void
+}) {
+  const deleteSession = useDeleteChatSession(session.id)
+
+  function handleDelete(e: React.MouseEvent) {
+    e.stopPropagation()
+    deleteSession.mutate(undefined, {
+      onSuccess: () => {
+        if (isCurrent) onSelect(startNewSession())
+      },
+    })
+  }
+
+  return (
+    <button
+      onClick={() => onSelect(session.id)}
+      className={`w-full text-left px-3 py-2.5 rounded-lg flex items-center justify-between gap-2 ${
+        isCurrent ? 'bg-brand/10 border border-brand/30' : 'bg-surface border border-transparent'
+      }`}
+    >
+      <div className="min-w-0 flex flex-col gap-0.5">
+        <span className="text-xs font-semibold truncate">{session.title}</span>
+        <span className="text-[11px] text-muted">
+          {new Date(session.updatedAt).toLocaleString('pt-BR', {
+            day: '2-digit',
+            month: '2-digit',
+            hour: '2-digit',
+            minute: '2-digit',
+          })}
+        </span>
+      </div>
+      <span
+        role="button"
+        onClick={handleDelete}
+        aria-label="Excluir conversa"
+        className="w-7 h-7 shrink-0 flex items-center justify-center rounded-lg text-muted"
+      >
+        <Trash2 size={13} />
+      </span>
+    </button>
   )
 }
 
@@ -194,12 +321,14 @@ function SetupForm({ initial, onSaved }: { initial: LlmSettings | null; onSaved:
 
 function Conversation({
   settings,
+  sessionId,
   initialMessages,
   memories,
   onHasMessagesChange,
   onReady,
 }: {
   settings: LlmSettings
+  sessionId: string
   initialMessages: UIMessage[]
   memories: AgentMemory[]
   onHasMessagesChange: (hasMessages: boolean) => void
@@ -207,7 +336,7 @@ function Conversation({
 }) {
   const queryClient = useQueryClient()
   const [input, setInput] = useState('')
-  const saveHistory = useSaveChatHistory()
+  const saveHistory = useSaveChatHistory(sessionId)
 
   // Cast to the generic ChatTransport<UIMessage> — the tool-specific type param DirectChatTransport
   // infers from the agent's ToolSet is compile-time only and doesn't affect the runtime shape, but
@@ -260,6 +389,9 @@ function Conversation({
   const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   useEffect(() => {
     if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current)
+    // Skip persisting an empty conversation — a freshly-opened/new session has none yet, and
+    // saving here would write a blank row that clutters the history list before the user types.
+    if (messages.length === 0) return
     saveTimeoutRef.current = setTimeout(() => {
       saveTimeoutRef.current = undefined
       saveHistory.mutate(messagesRef.current)
@@ -271,7 +403,7 @@ function Conversation({
     return () => {
       if (saveTimeoutRef.current) {
         clearTimeout(saveTimeoutRef.current)
-        saveHistory.mutate(messagesRef.current)
+        if (messagesRef.current.length > 0) saveHistory.mutate(messagesRef.current)
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps

@@ -2,17 +2,22 @@ import type { UIMessage } from 'ai'
 import {
   getChatHistory as getChatHistoryService,
   saveChatHistory as saveChatHistoryService,
-  clearChatHistory as clearChatHistoryService,
+  deleteChatSession as deleteChatSessionService,
+  listChatSessions as listChatSessionsService,
 } from '../services/chatHistoryService'
 
-export function getChatHistory() {
-  return getChatHistoryService()
+export function getChatHistory(sessionId: string) {
+  return getChatHistoryService(sessionId)
 }
 
-export function saveChatHistory(messages: UIMessage[]) {
-  return saveChatHistoryService(messages)
+export function saveChatHistory(sessionId: string, messages: UIMessage[]) {
+  return saveChatHistoryService(sessionId, messages)
 }
 
-export function clearChatHistory() {
-  return clearChatHistoryService()
+export function deleteChatSession(sessionId: string) {
+  return deleteChatSessionService(sessionId)
+}
+
+export function listChatSessions() {
+  return listChatSessionsService()
 }

@@ -33,7 +33,7 @@ import { useToastStore } from '../store/toastStore'
 import { Card } from '../components/ui/Card'
 import { IconCircle } from '../components/ui/IconCircle'
 import { Toggle } from '../components/ui/Toggle'
-import { formatCurrency, formatSignedCurrency } from '../utils/currency'
+import { formatCurrency, formatCurrencyTerm, formatSignedCurrency } from '../utils/currency'
 import { formatDayHeader, formatFullDate, formatMonthYear } from '../utils/date'
 import { computeMonthSummary, computeDayGroups } from '../utils/monthSummary'
 import { resolveCategoryIcon } from '../utils/categoryIcon'
@@ -66,6 +66,7 @@ export function TransactionsPage() {
   const [txFormOpen, setTxFormOpen] = useState(false)
   const [editingTx, setEditingTx] = useState<TransactionContract | null>(null)
   const [categoryEditTx, setCategoryEditTx] = useState<TransactionContract | null>(null)
+  const [averageDetailTx, setAverageDetailTx] = useState<TransactionContract | null>(null)
   const [pendingDeleteTx, setPendingDeleteTx] = useState<TransactionContract | null>(null)
   const [editingFixedPreview, setEditingFixedPreview] = useState<FixedTransactionResponse | null>(null)
   // The specific occurrence's due date (naive timestamp) for the preview row that was clicked —
@@ -332,7 +333,11 @@ export function TransactionsPage() {
     <div>
       {fixedModalOpen && <FixedTransactionsModal onClose={() => setFixedModalOpen(false)} />}
       {selectedCardPreview && (
-        <CardPreviewModal card={selectedCardPreview} onClose={() => setSelectedCardPreview(null)} />
+        <CardPreviewModal
+          card={selectedCardPreview}
+          onClose={() => setSelectedCardPreview(null)}
+          onOpenAverageDetail={setAverageDetailTx}
+        />
       )}
       {txFormOpen && (
         <TransactionFormModal
@@ -375,6 +380,9 @@ export function TransactionsPage() {
       )}
       {categoryEditTx && (
         <CategoryQuickEditModal transaction={categoryEditTx} onClose={() => setCategoryEditTx(null)} />
+      )}
+      {averageDetailTx && (
+        <AverageCompositionModal transaction={averageDetailTx} onClose={() => setAverageDetailTx(null)} />
       )}
       {editingFixedPreview && (
         <FixedTransactionFormModal
@@ -467,6 +475,7 @@ export function TransactionsPage() {
             onEditCategory={setCategoryEditTx}
             onEditTransaction={openEditTransaction}
             onEditFixedPreview={openEditFixedPreview}
+            onOpenAverageDetail={setAverageDetailTx}
           />
         </div>
 
@@ -556,6 +565,7 @@ export function TransactionsPage() {
                 onEditCategory={setCategoryEditTx}
                 onEditTransaction={openEditTransaction}
                 onEditFixedPreview={openEditFixedPreview}
+                onOpenAverageDetail={setAverageDetailTx}
               />
             </div>
           </Card>
@@ -611,24 +621,29 @@ function TransactionRow({
   onEditCategory,
   onEditTransaction,
   onEditFixedPreview,
+  onOpenAverageDetail,
 }: {
   transaction: TransactionContract
   onEditCategory?: (tx: TransactionContract) => void
   onEditTransaction?: (tx: TransactionContract) => void
   onEditFixedPreview?: (tx: TransactionContract) => void
+  onOpenAverageDetail?: (tx: TransactionContract) => void
 }) {
   const Icon = resolveCategoryIcon(transaction.icon)
   const value = transaction.value
   const color = transaction.color || '#8B8FA8'
   // Preview/synthetic rows aren't backed by a real transactions row, so neither affordance applies —
   // except a 'Fixed' bank-account preview row, which is traceable back to a real fixedTransactions
-  // row (see getAccountPreview) and can be edited through onEditFixedPreview.
+  // row (see getAccountPreview) and can be edited through onEditFixedPreview, and a 'CategoryAverage'
+  // row, which can show what it's composed of through onOpenAverageDetail.
   const editable = !transaction.previewSource
   const isFixedPreview = transaction.previewSource === 'Fixed' && !!onEditFixedPreview
-  const clickable = editable ? !!onEditTransaction : isFixedPreview
+  const isAveragePreview = transaction.previewSource === 'CategoryAverage' && !!onOpenAverageDetail
+  const clickable = editable ? !!onEditTransaction : isFixedPreview || isAveragePreview
 
   function handleClick() {
     if (isFixedPreview) onEditFixedPreview?.(transaction)
+    else if (isAveragePreview) onOpenAverageDetail?.(transaction)
     else if (editable) onEditTransaction?.(transaction)
   }
 
@@ -679,21 +694,25 @@ function TransactionTableRow({
   onEditCategory,
   onEditTransaction,
   onEditFixedPreview,
+  onOpenAverageDetail,
 }: {
   transaction: TransactionContract
   onEditCategory?: (tx: TransactionContract) => void
   onEditTransaction?: (tx: TransactionContract) => void
   onEditFixedPreview?: (tx: TransactionContract) => void
+  onOpenAverageDetail?: (tx: TransactionContract) => void
 }) {
   const Icon = resolveCategoryIcon(transaction.icon)
   const value = transaction.value
   const color = transaction.color || '#8B8FA8'
   const editable = !transaction.previewSource
   const isFixedPreview = transaction.previewSource === 'Fixed' && !!onEditFixedPreview
-  const clickable = editable ? !!onEditTransaction : isFixedPreview
+  const isAveragePreview = transaction.previewSource === 'CategoryAverage' && !!onOpenAverageDetail
+  const clickable = editable ? !!onEditTransaction : isFixedPreview || isAveragePreview
 
   function handleClick() {
     if (isFixedPreview) onEditFixedPreview?.(transaction)
+    else if (isAveragePreview) onOpenAverageDetail?.(transaction)
     else if (editable) onEditTransaction?.(transaction)
   }
 
@@ -811,6 +830,7 @@ function AccountPreviewSection({
   onEditCategory,
   onEditTransaction,
   onEditFixedPreview,
+  onOpenAverageDetail,
 }: {
   dayGroups: PreviewDayGroup[]
   value: number | undefined
@@ -822,6 +842,7 @@ function AccountPreviewSection({
   onEditCategory: (tx: TransactionContract) => void
   onEditTransaction: (tx: TransactionContract) => void
   onEditFixedPreview: (tx: TransactionContract) => void
+  onOpenAverageDetail: (tx: TransactionContract) => void
 }) {
   return (
     <div className="flex flex-col gap-2">
@@ -838,6 +859,7 @@ function AccountPreviewSection({
             onEditCategory={onEditCategory}
             onEditTransaction={onEditTransaction}
             onEditFixedPreview={onEditFixedPreview}
+            onOpenAverageDetail={onOpenAverageDetail}
           />
         ) : (
           <PreviewDayTable
@@ -847,6 +869,7 @@ function AccountPreviewSection({
             onEditCategory={onEditCategory}
             onEditTransaction={onEditTransaction}
             onEditFixedPreview={onEditFixedPreview}
+            onOpenAverageDetail={onOpenAverageDetail}
           />
         ))}
     </div>
@@ -860,6 +883,7 @@ function PreviewDayList({
   onEditCategory,
   onEditTransaction,
   onEditFixedPreview,
+  onOpenAverageDetail,
 }: {
   groups: PreviewDayGroup[]
   showEodBalance: boolean
@@ -867,6 +891,7 @@ function PreviewDayList({
   onEditCategory: (tx: TransactionContract) => void
   onEditTransaction: (tx: TransactionContract) => void
   onEditFixedPreview: (tx: TransactionContract) => void
+  onOpenAverageDetail: (tx: TransactionContract) => void
 }) {
   if (groups.length === 0) {
     return <p className="text-sm text-muted text-center pt-8">Nenhuma transação encontrada.</p>
@@ -885,6 +910,7 @@ function PreviewDayList({
               onEditCategory={onEditCategory}
               onEditTransaction={onEditTransaction}
               onEditFixedPreview={onEditFixedPreview}
+              onOpenAverageDetail={onOpenAverageDetail}
             />
           ))}
           {group.cards.map((card) => (
@@ -915,6 +941,7 @@ function PreviewDayTable({
   onEditCategory,
   onEditTransaction,
   onEditFixedPreview,
+  onOpenAverageDetail,
 }: {
   groups: PreviewDayGroup[]
   showEodBalance: boolean
@@ -922,6 +949,7 @@ function PreviewDayTable({
   onEditCategory: (tx: TransactionContract) => void
   onEditTransaction: (tx: TransactionContract) => void
   onEditFixedPreview: (tx: TransactionContract) => void
+  onOpenAverageDetail: (tx: TransactionContract) => void
 }) {
   if (groups.length === 0) {
     return <p className="text-sm text-muted text-center py-8">Nenhuma transação encontrada.</p>
@@ -946,6 +974,7 @@ function PreviewDayTable({
               onEditCategory={onEditCategory}
               onEditTransaction={onEditTransaction}
               onEditFixedPreview={onEditFixedPreview}
+              onOpenAverageDetail={onOpenAverageDetail}
             />
           ))}
           {group.cards.map((card) => (
@@ -1024,7 +1053,15 @@ function CardAggregateTableRow({ card, onClick }: { card: CardPreviewGroup; onCl
 // The card's own preview grouped by source (Parcelas/Fixos/Média) — what CardPreviewSection used
 // to render inline before it got collapsed into CardAggregateRow — now shown on demand instead of
 // always taking up space in the account's day-by-day list.
-function CardPreviewModal({ card, onClose }: { card: CardPreviewGroup; onClose: () => void }) {
+function CardPreviewModal({
+  card,
+  onClose,
+  onOpenAverageDetail,
+}: {
+  card: CardPreviewGroup
+  onClose: () => void
+  onOpenAverageDetail: (tx: TransactionContract) => void
+}) {
   const groups = useMemo(() => groupPreviewTransactions(card.transactions), [card.transactions])
 
   return (
@@ -1048,10 +1085,106 @@ function CardPreviewModal({ card, onClose }: { card: CardPreviewGroup; onClose: 
             <div key={group.source} className="flex flex-col gap-2">
               <PreviewGroupHeader label={group.label} subtotal={group.subtotal} />
               {group.items.map((tx) => (
-                <TransactionRow key={tx.id} transaction={tx} />
+                <TransactionRow key={tx.id} transaction={tx} onOpenAverageDetail={onOpenAverageDetail} />
               ))}
             </div>
           ))}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// Explains a 'CategoryAverage' preview row: the real transactions from the lookback window that
+// were averaged into it, and — for bank accounts only, see getAccountPreview — any real
+// transaction already entered this month for the same category, netted out of the shown value so
+// it isn't double-counted against the estimate.
+function AverageCompositionModal({ transaction, onClose }: { transaction: TransactionContract; onClose: () => void }) {
+  const composition = transaction.previewComposition
+  const sourceTotal = composition?.sourceTransactions.reduce((sum, t) => sum + t.value, 0) ?? 0
+  const realTotal = composition?.realThisMonthTransactions.reduce((sum, t) => sum + t.value, 0) ?? 0
+  const average = composition ? sourceTotal / composition.monthsInWindow : transaction.value
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+      <div className="w-full max-w-sm max-h-[80vh] rounded-2xl bg-card p-5 flex flex-col gap-3">
+        <div className="flex items-center justify-between">
+          <h2 className="text-base font-bold">Média · {transaction.categoryName}</h2>
+          <button onClick={onClose} className="text-sm text-muted">
+            Fechar
+          </button>
+        </div>
+        <div className="flex items-center justify-between px-1 -mt-1">
+          <span className="text-xs text-muted">
+            Estimativa {composition ? `(média de ${composition.monthsInWindow} ${composition.monthsInWindow === 1 ? 'mês' : 'meses'})` : ''}
+          </span>
+          <span className={`text-sm font-semibold ${transaction.value >= 0 ? 'text-positive' : 'text-negative'}`}>
+            {formatSignedCurrency(transaction.value)}
+          </span>
+        </div>
+
+        <div className="flex-1 overflow-y-auto flex flex-col gap-4">
+          {composition && (
+            <div className="flex flex-col gap-2 p-3 rounded-xl bg-bg">
+              <span className="text-[11px] font-semibold tracking-wide text-muted">Como a média foi calculada</span>
+              {composition.monthlyTotals.map((m) => (
+                <div key={`${m.year}-${m.month}`} className="flex items-center justify-between">
+                  <span className="text-sm text-muted">{formatMonthYear(m.month, m.year)}</span>
+                  <span className={`text-sm font-semibold ${m.total >= 0 ? 'text-positive' : 'text-negative'}`}>
+                    {formatSignedCurrency(m.total)}
+                  </span>
+                </div>
+              ))}
+              <div className="pt-2 border-t border-border text-sm font-mono break-words">
+                {`(${composition.monthlyTotals.map((m, i) => formatCurrencyTerm(m.total, i === 0)).join(' ')}) / ${composition.monthsInWindow} = ${formatSignedCurrency(average)}`}
+              </div>
+              {composition.realThisMonthTransactions.length > 0 && (
+                <div className="text-sm font-mono break-words">
+                  {`${formatSignedCurrency(average)} - ${formatCurrency(Math.abs(realTotal))} (já lançado este mês) = ${formatSignedCurrency(transaction.value)}`}
+                </div>
+              )}
+            </div>
+          )}
+
+          <div className="flex flex-col gap-2">
+            <span className="text-[11px] font-semibold tracking-wide text-muted">
+              Lançamentos usados na média ({formatSignedCurrency(sourceTotal)})
+            </span>
+            {composition && composition.sourceTransactions.length > 0 ? (
+              composition.sourceTransactions.map((t) => (
+                <div key={t.id} className="flex items-center justify-between gap-2 px-1">
+                  <div className="flex flex-col min-w-0">
+                    <span className="text-sm truncate">{t.description || transaction.categoryName}</span>
+                    <span className="text-xs text-muted">{formatFullDate(t.dueDate)}</span>
+                  </div>
+                  <span className={`text-sm font-semibold shrink-0 ${t.value >= 0 ? 'text-positive' : 'text-negative'}`}>
+                    {formatSignedCurrency(t.value)}
+                  </span>
+                </div>
+              ))
+            ) : (
+              <p className="text-sm text-muted px-1">Nenhum lançamento encontrado.</p>
+            )}
+          </div>
+
+          {composition && composition.realThisMonthTransactions.length > 0 && (
+            <div className="flex flex-col gap-2">
+              <span className="text-[11px] font-semibold tracking-wide text-muted">
+                Já lançados este mês, descontados da média ({formatSignedCurrency(realTotal)})
+              </span>
+              {composition.realThisMonthTransactions.map((t) => (
+                <div key={t.id} className="flex items-center justify-between gap-2 px-1">
+                  <div className="flex flex-col min-w-0">
+                    <span className="text-sm truncate">{t.description || transaction.categoryName}</span>
+                    <span className="text-xs text-muted">{formatFullDate(t.dueDate)}</span>
+                  </div>
+                  <span className={`text-sm font-semibold shrink-0 ${t.value >= 0 ? 'text-positive' : 'text-negative'}`}>
+                    {formatSignedCurrency(t.value)}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       </div>
     </div>

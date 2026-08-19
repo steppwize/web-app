@@ -116,6 +116,19 @@ export interface TransactionContract {
   // Only populated for bank-account 'Fixed' preview rows backed by a fixed_transactions row
   // with an end date (installments, single-month one-offs) — shown as a discreet hint in the UI.
   previewEndDate?: string | null
+  // Only populated for previewSource === 'CategoryAverage' rows — lets the UI show what the
+  // average is made of. `realThisMonthTransactions` are real transactions already entered this
+  // month for the same category, already netted out of `value` (see getAccountPreview) — shown so
+  // the user can see why the displayed estimate isn't the raw 3-month average.
+  previewComposition?: {
+    monthsInWindow: number
+    // One subtotal per month counted in the average's denominator, oldest first (0 for a month with
+    // no transactions in this category) — so `sum(monthlyTotals) / monthsInWindow` always matches
+    // the average shown, even when a month contributed nothing.
+    monthlyTotals: { year: number; month: number; total: number }[]
+    sourceTransactions: { id: string; description: string; value: number; dueDate: string }[]
+    realThisMonthTransactions: { id: string; description: string; value: number; dueDate: string }[]
+  }
 }
 
 export interface TransactionTotalByAccount {

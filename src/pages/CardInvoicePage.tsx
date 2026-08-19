@@ -8,7 +8,7 @@ import { payInvoice } from '../api/cards'
 import { IconCircle } from '../components/ui/IconCircle'
 import { CategoryBreakdownChart } from '../components/CategoryBreakdownChart'
 import { buildCategoryBreakdown } from '../utils/categoryBreakdown'
-import { formatCurrency, formatSignedCurrency } from '../utils/currency'
+import { formatCurrency, formatCurrencyTerm, formatSignedCurrency } from '../utils/currency'
 import { formatFullDate, formatMonthAbbr, formatMonthYear, formatShortDate } from '../utils/date'
 import { resolveCategoryIcon } from '../utils/categoryIcon'
 import { groupPreviewTransactions, previewSourceLabel } from '../utils/previewGroups'
@@ -46,6 +46,7 @@ export function CardInvoicePage() {
 
   const slices = useMemo(() => buildCategoryBreakdown(chartTransactions), [chartTransactions])
   const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set())
+  const [averageDetailTx, setAverageDetailTx] = useState<TransactionContract | null>(null)
 
   useEffect(() => {
     setSelectedKeys(new Set())
@@ -116,6 +117,9 @@ export function CardInvoicePage() {
 
   return (
     <div>
+      {averageDetailTx && (
+        <AverageCompositionModal transaction={averageDetailTx} onClose={() => setAverageDetailTx(null)} />
+      )}
       {/* Mobile */}
       <div className="lg:hidden flex flex-col h-dvh">
         <div className="flex items-center gap-2.5 px-4 py-3">
@@ -175,7 +179,7 @@ export function CardInvoicePage() {
                 <div key={group.source} className="flex flex-col gap-2">
                   <PreviewGroupHeader label={group.label} subtotal={group.subtotal} />
                   {group.items.map((tx) => (
-                    <StatementRow key={tx.id} transaction={tx} />
+                    <StatementRow key={tx.id} transaction={tx} onOpenAverageDetail={setAverageDetailTx} />
                   ))}
                 </div>
               ))
@@ -283,7 +287,7 @@ export function CardInvoicePage() {
                 <div key={group.source}>
                   <PreviewGroupHeader label={group.label} subtotal={group.subtotal} />
                   {group.items.map((tx) => (
-                    <StatementTableRow key={tx.id} transaction={tx} />
+                    <StatementTableRow key={tx.id} transaction={tx} onOpenAverageDetail={setAverageDetailTx} />
                   ))}
                 </div>
               ))
@@ -312,6 +316,74 @@ function PreviewGroupHeader({ label, subtotal }: { label: string; subtotal: numb
       <span className={`text-xs font-semibold ${subtotal >= 0 ? 'text-positive' : 'text-negative'}`}>
         {formatSignedCurrency(subtotal)}
       </span>
+    </div>
+  )
+}
+
+// Explains a 'CategoryAverage' preview row: the real transactions from the lookback window that
+// were averaged into it (see getInvoicePreview). Unlike the bank-account preview, the card's
+// lookback window always ends before the target invoice, so there's no "already this month" list.
+function AverageCompositionModal({ transaction, onClose }: { transaction: TransactionContract; onClose: () => void }) {
+  const composition = transaction.previewComposition
+  const sourceTotal = composition?.sourceTransactions.reduce((sum, t) => sum + t.value, 0) ?? 0
+  const average = composition ? sourceTotal / composition.monthsInWindow : transaction.value
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+      <div className="w-full max-w-sm max-h-[80vh] rounded-2xl bg-card p-5 flex flex-col gap-3">
+        <div className="flex items-center justify-between">
+          <h2 className="text-base font-bold">Média · {transaction.categoryName}</h2>
+          <button onClick={onClose} className="text-sm text-muted">
+            Fechar
+          </button>
+        </div>
+        <div className="flex items-center justify-between px-1 -mt-1">
+          <span className="text-xs text-muted">
+            Estimativa {composition ? `(média de ${composition.monthsInWindow} ${composition.monthsInWindow === 1 ? 'mês' : 'meses'})` : ''}
+          </span>
+          <span className={`text-sm font-semibold ${transaction.value >= 0 ? 'text-positive' : 'text-negative'}`}>
+            {formatSignedCurrency(transaction.value)}
+          </span>
+        </div>
+
+        <div className="flex-1 overflow-y-auto flex flex-col gap-4">
+          {composition && (
+            <div className="flex flex-col gap-2 p-3 rounded-xl bg-bg">
+              <span className="text-[11px] font-semibold tracking-wide text-muted">Como a média foi calculada</span>
+              {composition.monthlyTotals.map((m) => (
+                <div key={`${m.year}-${m.month}`} className="flex items-center justify-between">
+                  <span className="text-sm text-muted">{formatMonthYear(m.month, m.year)}</span>
+                  <span className={`text-sm font-semibold ${m.total >= 0 ? 'text-positive' : 'text-negative'}`}>
+                    {formatSignedCurrency(m.total)}
+                  </span>
+                </div>
+              ))}
+              <div className="pt-2 border-t border-border text-sm font-mono break-words">
+                {`(${composition.monthlyTotals.map((m, i) => formatCurrencyTerm(m.total, i === 0)).join(' ')}) / ${composition.monthsInWindow} = ${formatSignedCurrency(average)}`}
+              </div>
+            </div>
+          )}
+
+          <span className="text-[11px] font-semibold tracking-wide text-muted">
+            Lançamentos usados na média ({formatSignedCurrency(sourceTotal)})
+          </span>
+          {composition && composition.sourceTransactions.length > 0 ? (
+            composition.sourceTransactions.map((t) => (
+              <div key={t.id} className="flex items-center justify-between gap-2 px-1">
+                <div className="flex flex-col min-w-0">
+                  <span className="text-sm truncate">{t.description || transaction.categoryName}</span>
+                  <span className="text-xs text-muted">{formatFullDate(t.dueDate)}</span>
+                </div>
+                <span className={`text-sm font-semibold shrink-0 ${t.value >= 0 ? 'text-positive' : 'text-negative'}`}>
+                  {formatSignedCurrency(t.value)}
+                </span>
+              </div>
+            ))
+          ) : (
+            <p className="text-sm text-muted px-1">Nenhum lançamento encontrado.</p>
+          )}
+        </div>
+      </div>
     </div>
   )
 }
@@ -448,12 +520,22 @@ function PreviewBadge({ source }: { source: TransactionContract['previewSource']
   )
 }
 
-function StatementRow({ transaction }: { transaction: TransactionContract }) {
+function StatementRow({
+  transaction,
+  onOpenAverageDetail,
+}: {
+  transaction: TransactionContract
+  onOpenAverageDetail?: (tx: TransactionContract) => void
+}) {
   const Icon = resolveCategoryIcon(transaction.icon)
   const color = transaction.color || '#8B8FA8'
   const subCard = subCardLabel(transaction)
+  const isAveragePreview = transaction.previewSource === 'CategoryAverage' && !!onOpenAverageDetail
   return (
-    <div className="flex items-center gap-3 h-[60px] px-3 rounded-xl bg-card">
+    <div
+      onClick={isAveragePreview ? () => onOpenAverageDetail?.(transaction) : undefined}
+      className={`flex items-center gap-3 h-[60px] px-3 rounded-xl bg-card ${isAveragePreview ? 'cursor-pointer' : ''}`}
+    >
       <IconCircle background={`${color}20`} size={36}>
         <Icon size={16} style={{ color }} />
       </IconCircle>
@@ -474,10 +556,20 @@ function StatementRow({ transaction }: { transaction: TransactionContract }) {
   )
 }
 
-function StatementTableRow({ transaction }: { transaction: TransactionContract }) {
+function StatementTableRow({
+  transaction,
+  onOpenAverageDetail,
+}: {
+  transaction: TransactionContract
+  onOpenAverageDetail?: (tx: TransactionContract) => void
+}) {
   const subCard = subCardLabel(transaction)
+  const isAveragePreview = transaction.previewSource === 'CategoryAverage' && !!onOpenAverageDetail
   return (
-    <div className="flex items-center h-[52px] px-4 border-b border-border">
+    <div
+      onClick={isAveragePreview ? () => onOpenAverageDetail?.(transaction) : undefined}
+      className={`flex items-center h-[52px] px-4 border-b border-border ${isAveragePreview ? 'cursor-pointer' : ''}`}
+    >
       <span className="w-[90px] text-[13px] text-muted">{formatShortDate(transaction.dueDate)}</span>
       <span className="flex-1 flex items-center gap-1.5 min-w-0 text-sm font-medium truncate">
         <span className="truncate">{transaction.description}</span>
