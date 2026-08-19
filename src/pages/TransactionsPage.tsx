@@ -305,6 +305,8 @@ export function TransactionsPage() {
       ? previewDayGroups[previewDayGroups.length - 1].endOfDayBalance
       : previewStartingBalance
 
+  const remainingMonthEstimate = displayedProjectedBalance - (cashFlow?.total ?? 0)
+
   function goToPreviousMonth() {
     if (month === 1) {
       setMonth(12)
@@ -456,7 +458,7 @@ export function TransactionsPage() {
         <div className="flex-1 overflow-y-auto px-4 pb-32">
           <AccountPreviewSection
             dayGroups={filteredPreviewDayGroups}
-            value={preview?.value}
+            value={remainingMonthEstimate}
             loading={isPreviewLoading}
             hasAnyPreviewData={hasAnyPreviewData}
             showEodBalance={showEodBalance}
@@ -545,7 +547,7 @@ export function TransactionsPage() {
             <div className="flex flex-col gap-2 px-4 py-3">
               <AccountPreviewSection
                 dayGroups={filteredPreviewDayGroups}
-                value={preview?.value}
+                value={remainingMonthEstimate}
                 loading={isPreviewLoading}
                 hasAnyPreviewData={hasAnyPreviewData}
                 showEodBalance={showEodBalance}
